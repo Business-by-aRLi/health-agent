@@ -154,3 +154,26 @@ Deno.test("ערך קטגוריאלי לא מוכר נשמר כ-1 עם הטקסט
   assertEquals(batch.samples[0].value, 1);
   assertEquals(batch.samples[0].meta?.category, "Complete");
 });
+
+Deno.test("sleep: inBed = 0 מהשעון (payload אמיתי) → זמן במיטה מחושב מהטווח", () => {
+  // המבנה הזה הגיע מהטלפון ב-23.10.2026 (Apple Watch בלבד, בלי לוח שינה באייפון)
+  const { batch } = adaptHealthAutoExport({
+    data: {
+      metrics: [{
+        name: "sleep_analysis", units: "hr",
+        data: [{
+          rem: 2.338125245836046, core: 4.30055950164795, deep: 0.5845813581678603, awake: 0.434228515625,
+          inBed: 0, asleep: 0, totalSleep: 7.223266105651856,
+          date: "2026-10-22 00:00:00 +0300",
+          inBedStart: "2026-10-21 23:55:51 +0300", inBedEnd: "2026-10-22 07:35:18 +0300",
+          sleepStart: "2026-10-21 23:55:51 +0300", sleepEnd: "2026-10-22 07:35:18 +0300",
+          source: "Apple Watch",
+        }],
+      }],
+    },
+  }, ctx);
+  const s = batch.sleep[0];
+  assertEquals(s.sleep_date, "2026-10-22");
+  assertEquals(s.total_asleep_min, 433.4);
+  assertEquals(s.in_bed_min, 459.45);
+});

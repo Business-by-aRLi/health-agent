@@ -212,6 +212,14 @@ function adaptAggregatedSleep(p: Json, units: string | undefined, ctx: AdapterCo
   if (!sleepDate) return undefined;
 
   const core = toMin(p.core), deep = toMin(p.deep), rem = toMin(p.rem), unspecified = toMin(p.asleep);
+  // השעון לבד לא מודד "זמן במיטה" ושולח inBed: 0 (נצפה ב-payload אמיתי).
+  // במקרה כזה זמן במיטה = מתחילת השינה ועד הקימה, כדי ש-sleep_efficiency יהיה חישוב אמיתי ולא null.
+  const bedStart = parseHaeDate(p.inBedStart) ?? parseHaeDate(p.sleepStart);
+  const bedEnd = inBedEnd ?? asleepEnd;
+  const reportedInBed = toMin(p.inBed);
+  const inBedMin = reportedInBed && reportedInBed > 0
+    ? reportedInBed
+    : bedStart && bedEnd ? round((Date.parse(bedEnd) - Date.parse(bedStart)) / 60000, 2) : null;
   const total = toMin(p.totalSleep) ??
     sumOrNull([core, deep, rem, unspecified]);
 
@@ -222,7 +230,7 @@ function adaptAggregatedSleep(p: Json, units: string | undefined, ctx: AdapterCo
     asleep_start: parseHaeDate(p.sleepStart),
     asleep_end: asleepEnd,
     total_asleep_min: total,
-    in_bed_min: toMin(p.inBed),
+    in_bed_min: inBedMin,
     core_min: core, deep_min: deep, rem_min: rem,
     awake_min: toMin(p.awake),
     stages: null,
