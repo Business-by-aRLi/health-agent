@@ -68,8 +68,8 @@ begin
 
   assert (select count(*) from public.health_samples) = n_samples, 'no duplicate samples on re-send';
   assert (select count(*) from public.workouts) = 2, 'no duplicate workouts';
-  assert (select count(*) from public.workout_samples) = n_ws, 'series replaced, not appended';
-  assert (select count(*) from public.workout_route_points) = n_route, 'route replaced, not appended';
+  assert (select count(*) from public.workout_samples) = n_ws, 'series upserted, not appended';
+  assert (select count(*) from public.workout_route_points) = n_route, 'route upserted, not appended';
   assert (select notes from public.workouts where external_id = '8F1A2B3C-0000-4D5E-9F10-ABCDEF123456') = 'ברך שמאל הציקה',
          'user notes survive re-ingest';
   assert (select perceived_effort from public.workouts where external_id = '8F1A2B3C-0000-4D5E-9F10-ABCDEF123456') = 7,

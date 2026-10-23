@@ -369,6 +369,7 @@ create policy "coach reads permitted clients" on public.workouts
 - **Output:** `200 { samples, workouts, sleep_sessions, days_affected }`.
 - **שגיאות:** 401 טוקן לא תקין; 413 payload גדול מדי; 422 פורמט לא מוכר (ה-payload נשמר עם `failed` להרצה מחדש).
 - **אידמפוטנטיות:** שליחה חוזרת של אותו payload לא יוצרת כפילויות, בזכות ה-UNIQUE constraints.
+- **סטטוס:** ✅ פרוס (`verify_jwt = false`, אימות עצמי לפי טוקן). מדריך החיבור: [`setup-health-auto-export.md`](setup-health-auto-export.md).
 
 ### `POST /functions/v1/telegram-webhook`
 - **Auth:** secret token של טלגרם.

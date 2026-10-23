@@ -96,16 +96,16 @@ begin
     returning id into v_workout_id;
     v_workouts := v_workouts + 1;
 
-    -- הסדרות מוחלפות במלואן: גרסת האימון האחרונה מהמקור היא האמת
-    delete from public.workout_samples      where workout_id = v_workout_id;
-    delete from public.workout_route_points where workout_id = v_workout_id;
-
+    -- הסדרות נכתבות ב-upsert על המפתח (workout_id, metric, at). HealthKit לא משנה אימון
+    -- אחרי שנשמר, ולכן שליחה חוזרת מגיעה עם אותם מפתחות ומעדכנת במקום לשכפל.
     insert into public.workout_samples (workout_id, user_id, metric, at, value, value_min, value_max, unit)
     select distinct on (x.metric, x.at)
            v_workout_id, v_user, x.metric, x.at, x.value, x.value_min, x.value_max, x.unit
       from jsonb_to_recordset(coalesce(v_workout -> 'samples', '[]'::jsonb)) as x(
              metric text, at timestamptz, value numeric, value_min numeric, value_max numeric, unit text)
-     where x.metric is not null and x.at is not null and x.value is not null;
+     where x.metric is not null and x.at is not null and x.value is not null
+    on conflict (workout_id, metric, at) do update set
+      value = excluded.value, value_min = excluded.value_min, value_max = excluded.value_max, unit = excluded.unit;
     get diagnostics v_n = row_count;
     v_wsamples := v_wsamples + v_n;
 
@@ -118,7 +118,10 @@ begin
              at timestamptz, lat double precision, lon double precision, altitude_m double precision,
              speed_mps double precision, course_deg double precision,
              h_accuracy_m double precision, v_accuracy_m double precision)
-     where x.at is not null and x.lat is not null and x.lon is not null;
+     where x.at is not null and x.lat is not null and x.lon is not null
+    on conflict (workout_id, at) do update set
+      lat = excluded.lat, lon = excluded.lon, altitude_m = excluded.altitude_m, speed_mps = excluded.speed_mps,
+      course_deg = excluded.course_deg, h_accuracy_m = excluded.h_accuracy_m, v_accuracy_m = excluded.v_accuracy_m;
     get diagnostics v_n = row_count;
     v_route := v_route + v_n;
   end loop;
