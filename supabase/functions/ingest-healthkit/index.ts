@@ -39,11 +39,11 @@ Deno.serve(async (req) => {
 
   const { data: source } = await db
     .from("data_sources")
-    .select("id, user_id, status, profiles!inner(timezone)")
+    .select("id, user_id, status, profiles!inner(timezone, cycle_tracking_enabled)")
     .eq("id", secret.source_id)
     .single();
   if (!source || source.status !== "active") return error(401, "source_inactive", "המקור בוטל");
-  const timezone = (source.profiles as unknown as { timezone: string }).timezone;
+  const profile = source.profiles as unknown as { timezone: string; cycle_tracking_enabled: boolean };
 
   // ---- 2. קריאת הגוף
   const text = await req.text();
@@ -73,7 +73,10 @@ Deno.serve(async (req) => {
   // ---- 4. המרה למודל הקנוני
   let adapted;
   try {
-    adapted = adaptHealthAutoExport(payload, { timezone });
+    adapted = adaptHealthAutoExport(payload, {
+      timezone: profile.timezone,
+      cycleTracking: profile.cycle_tracking_enabled,
+    });
   } catch (e) {
     if (e instanceof AdapterError) return await fail(422, "unrecognized_format", e.message);
     return await fail(500, "adapter_crash", String(e));

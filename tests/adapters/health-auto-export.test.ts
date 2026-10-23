@@ -4,7 +4,7 @@ import { adaptHealthAutoExport, AdapterError, snake } from "../../supabase/funct
 import { parseHaeDate } from "../../supabase/functions/_shared/time.ts";
 import { normalize } from "../../supabase/functions/_shared/units.ts";
 
-const ctx = { timezone: "Asia/Jerusalem" };
+const ctx = { timezone: "Asia/Jerusalem", cycleTracking: false };
 const load = (name: string) => JSON.parse(Deno.readTextFileSync(new URL(`../fixtures/${name}`, import.meta.url)));
 
 Deno.test("parseHaeDate: פורמט HAE → ISO עם offset", () => {
@@ -126,4 +126,31 @@ Deno.test("payload לא מוכר זורק AdapterError (→ 422)", () => {
 Deno.test("payload ריק תקין = batch ריק", () => {
   const { batch } = adaptHealthAutoExport({ data: { metrics: [], workouts: [] } }, ctx);
   assertEquals(batch, { samples: [], workouts: [], sleep: [] });
+});
+
+Deno.test("מחזור: כשהמעקב כבוי, נתוני מחזור לא נקלטים בכלל", () => {
+  const { batch, warnings } = adaptHealthAutoExport(load("hae-cycle.json"), { ...ctx, cycleTracking: false });
+  assertEquals(batch.samples.map((s) => s.metric), ["steps"]);
+  assertEquals(warnings, ["מעקב מחזור כבוי: 17 נקודות מחזור לא נקלטו"]);
+});
+
+Deno.test("מחזור: כשהמעקב מופעל, ערכים קטגוריאליים מקודדים והטקסט נשמר", () => {
+  const { batch, warnings } = adaptHealthAutoExport(load("hae-cycle.json"), { ...ctx, cycleTracking: true });
+  const flow = batch.samples.filter((s) => s.metric === "menstrual_flow");
+  assertEquals(flow.length, 15);
+  assertEquals([flow[0].value, flow[0].unit, flow[0].meta?.category], [2, "category", "Medium"]);
+  assertEquals(flow[1].value, 3); // Heavy
+  assertEquals(flow.at(-1)?.value, 0); // None
+  const mucus = batch.samples.find((s) => s.metric === "cervical_mucus_quality");
+  assertEquals([mucus?.value, mucus?.meta?.category], [3, "Creamy"]);
+  assertEquals(batch.samples.find((s) => s.metric === "basal_body_temperature")?.unit, "degC");
+  assertEquals(warnings, []);
+});
+
+Deno.test("ערך קטגוריאלי לא מוכר נשמר כ-1 עם הטקסט, לא נזרק", () => {
+  const { batch } = adaptHealthAutoExport({
+    data: { metrics: [{ name: "handwashing", units: "", data: [{ date: "2026-10-22 08:00:00 +0300", value: "Complete" }] }] },
+  }, ctx);
+  assertEquals(batch.samples[0].value, 1);
+  assertEquals(batch.samples[0].meta?.category, "Complete");
 });

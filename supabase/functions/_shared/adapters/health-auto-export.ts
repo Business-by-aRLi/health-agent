@@ -56,6 +56,23 @@ export const METRIC_MAP: Record<string, string> = {
   cardio_recovery: "cardio_recovery",
 };
 
+// מדדי Cycle Tracking. נקלטים רק כש-ctx.cycleTracking (ראו ARCHITECTURE 4.4ג)
+export const CYCLE_METRICS = new Set([
+  "menstrual_flow", "intermenstrual_bleeding", "cervical_mucus_quality", "ovulation_test_result",
+  "basal_body_temperature", "sexual_activity", "contraceptives", "pregnancy_test_result",
+  "progesterone_test_result", "pregnancy", "lactation",
+]);
+
+// ערכים קטגוריאליים → מספר, כדי שאפשר יהיה לחשב (max, ספירה). הטקסט נשמר ב-meta.category.
+// מה שלא מופיע כאן מקבל 1 ("נרשם").
+const CATEGORY_CODES: Record<string, Record<string, number>> = {
+  menstrual_flow: { none: 0, unspecified: 1, light: 1, medium: 2, heavy: 3 },
+  cervical_mucus_quality: { dry: 1, sticky: 2, creamy: 3, watery: 4, "egg white": 5 },
+  ovulation_test_result: { negative: 0, positive: 2, "luteinizing hormone surge": 2, indeterminate: 1, "estrogen surge": 1 },
+  pregnancy_test_result: { negative: 0, positive: 1, indeterminate: 0.5 },
+  progesterone_test_result: { negative: 0, positive: 1, indeterminate: 0.5 },
+};
+
 // שדות ב-workout שממופים לעמודות. כל השאר הולך ל-metrics/raw.
 const WORKOUT_CORE_KEYS = new Set([
   "id", "name", "start", "end", "duration", "location", "isIndoor",
@@ -83,6 +100,7 @@ export function adaptHealthAutoExport(payload: unknown, ctx: AdapterContext): Ad
   const samples: CanonicalSample[] = [];
   const sleep: CanonicalSleep[] = [];
   const workouts: CanonicalWorkout[] = [];
+  let skippedCycle = 0;
 
   for (const metric of asArray(data.metrics)) {
     const name = String(metric.name ?? "");
@@ -96,6 +114,10 @@ export function adaptHealthAutoExport(payload: unknown, ctx: AdapterContext): Ad
       sleep.push(...adaptSleep(points, units, ctx, warnings));
       continue;
     }
+    if (CYCLE_METRICS.has(name) && !ctx.cycleTracking) {
+      skippedCycle += points.length;
+      continue;
+    }
     for (const p of points) {
       samples.push(...adaptMetricPoint(name, units, p, warnings));
     }
@@ -106,6 +128,7 @@ export function adaptHealthAutoExport(payload: unknown, ctx: AdapterContext): Ad
     if (adapted) workouts.push(adapted);
   }
 
+  if (skippedCycle) warnings.push(`מעקב מחזור כבוי: ${skippedCycle} נקודות מחזור לא נקלטו`);
   return { batch: { samples, workouts, sleep }, warnings: dedupeWarnings(warnings) };
 }
 
@@ -144,7 +167,18 @@ function adaptMetricPoint(name: string, units: string | undefined, p: Json, warn
     }];
   }
 
-  // 3) גנרי: כל שדה מספרי הופך למדד נפרד. למשל לחץ דם:
+  // 3) קטגוריאלי: { date, value: "Medium" }. מקודד למספר, והטקסט נשמר
+  if (typeof p.value === "string" && p.value.trim()) {
+    const category = p.value.trim();
+    const code = CATEGORY_CODES[name]?.[category.toLowerCase()] ?? 1;
+    return [{ metric, start_at: start, end_at: end, value: code, unit: "category", meta: { ...meta, category } }];
+  }
+  if (isNum(p.value)) {
+    const n = normalize(p.value, units);
+    return [{ metric, start_at: start, end_at: end, value: n.value, unit: n.unit, meta }];
+  }
+
+  // 4) גנרי: כל שדה מספרי הופך למדד נפרד. למשל לחץ דם:
   //    { systolic, diastolic } → blood_pressure_systolic, blood_pressure_diastolic
   const out: CanonicalSample[] = [];
   for (const [k, v] of Object.entries(p)) {

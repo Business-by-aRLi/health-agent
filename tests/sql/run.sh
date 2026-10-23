@@ -22,7 +22,9 @@ done
 
 deno run --allow-read "$ROOT/tests/adapters/print-canonical.ts" "$ROOT/tests/fixtures/hae-sample.json" > "$TMP/batch.json"
 deno run --allow-read "$ROOT/tests/adapters/print-canonical.ts" "$ROOT/tests/fixtures/hae-sleep-segments.json" > "$TMP/batch2.json"
+deno run --allow-read "$ROOT/tests/adapters/print-canonical.ts" "$ROOT/tests/fixtures/hae-cycle.json" Asia/Jerusalem true > "$TMP/batch3.json"
 
 echo "→ integration tests"
 "${PSQL[@]}" -v batch="$(cat "$TMP/batch.json")" -v batch2="$(cat "$TMP/batch2.json")" -f "$ROOT/tests/sql/ingest.test.sql"
+"${PSQL[@]}" -v batch3="$(cat "$TMP/batch3.json")" -f "$ROOT/tests/sql/domain.test.sql"
 echo "✓ all SQL tests passed"

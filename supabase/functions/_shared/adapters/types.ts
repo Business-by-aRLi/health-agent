@@ -92,6 +92,8 @@ export interface CanonicalBatch {
 export interface AdapterContext {
   /** ה-timezone של המשתמש, למשל 'Asia/Jerusalem'. קובע לאיזה "יום" שייך לילה */
   timezone: string;
+  /** מעקב מחזור מופעל? אם לא, נתוני מחזור לא נקלטים בכלל (data minimization) */
+  cycleTracking: boolean;
 }
 
 export interface AdapterResult {
