@@ -1,0 +1,22 @@
+{
+  "tasks": {
+    "test": "deno test --allow-read tests/adapters",
+    "test:sql": "bash tests/sql/run.sh",
+    "check": "deno check supabase/functions/ingest-healthkit/index.ts tests/adapters/*.ts",
+    "lint": "deno lint supabase/functions tests"
+  },
+  "fmt": {
+    "lineWidth": 120
+  },
+  "lint": {
+    "rules": {
+      "exclude": [
+        "no-explicit-any"
+      ]
+    }
+  },
+  "imports": {
+    "@supabase/supabase-js": "npm:@supabase/supabase-js@2.49.4",
+    "@std/assert": "jsr:@std/assert@1.0.13"
+  }
+}

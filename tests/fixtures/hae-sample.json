@@ -1,0 +1,124 @@
+{
+  "data": {
+    "metrics": [
+      {
+        "name": "step_count",
+        "units": "count",
+        "data": [
+          { "date": "2026-10-22 07:00:00 +0300", "qty": 1840, "source": "Apple Watch|iPhone" },
+          { "date": "2026-10-22 08:00:00 +0300", "qty": 3120, "source": "Apple Watch|iPhone" },
+          { "date": "2026-10-22 18:00:00 +0300", "qty": 2200, "source": "Apple Watch|iPhone" },
+          { "date": "2026-10-22 18:00:00 +0300", "qty": 2200, "source": "Apple Watch|iPhone" }
+        ]
+      },
+      {
+        "name": "heart_rate",
+        "units": "count/min",
+        "data": [
+          { "date": "2026-10-22 07:00:00 +0300", "Min": 58, "Avg": 72.4, "Max": 141, "source": "Apple Watch" },
+          { "date": "2026-10-22 08:00:00 +0300", "Min": 61, "Avg": 78, "Max": 102, "source": "Apple Watch" }
+        ]
+      },
+      {
+        "name": "resting_heart_rate",
+        "units": "count/min",
+        "data": [{ "date": "2026-10-22 00:00:00 +0300", "qty": 56, "source": "Apple Watch" }]
+      },
+      {
+        "name": "heart_rate_variability",
+        "units": "ms",
+        "data": [
+          { "date": "2026-10-22 03:12:00 +0300", "qty": 48.2, "source": "Apple Watch" },
+          { "date": "2026-10-22 05:40:00 +0300", "qty": 52.8, "source": "Apple Watch" }
+        ]
+      },
+      {
+        "name": "active_energy",
+        "units": "kJ",
+        "data": [{ "date": "2026-10-22 07:00:00 +0300", "qty": 1255.2, "source": "Apple Watch" }]
+      },
+      {
+        "name": "weight_body_mass",
+        "units": "kg",
+        "data": [{ "date": "2026-10-22 06:50:00 +0300", "qty": 64.3, "source": "Withings" }]
+      },
+      {
+        "name": "blood_pressure",
+        "units": "mmHg",
+        "data": [{ "date": "2026-10-22 07:05:00 +0300", "systolic": 112, "diastolic": 71 }]
+      },
+      {
+        "name": "sleep_analysis",
+        "units": "hr",
+        "data": [
+          {
+            "date": "2026-10-22 00:00:00 +0300",
+            "totalSleep": 7.05, "asleep": 0, "core": 3.9, "deep": 1.15, "rem": 2.0, "awake": 0.35,
+            "inBed": 7.6,
+            "sleepStart": "2026-10-21 23:20:00 +0300", "sleepEnd": "2026-10-22 06:45:00 +0300",
+            "inBedStart": "2026-10-21 23:05:00 +0300", "inBedEnd": "2026-10-22 06:50:00 +0300",
+            "source": "Apple Watch"
+          }
+        ]
+      },
+      {
+        "name": "some_future_metric",
+        "units": "furlongs",
+        "data": [{ "date": "2026-10-22 09:00:00 +0300", "qty": 3 }]
+      }
+    ],
+    "workouts": [
+      {
+        "id": "8F1A2B3C-0000-4D5E-9F10-ABCDEF123456",
+        "name": "Outdoor Run",
+        "start": "2026-10-22 07:10:00 +0300",
+        "end": "2026-10-22 07:52:30 +0300",
+        "duration": 2550,
+        "location": "Outdoor",
+        "isIndoor": false,
+        "activeEnergyBurned": { "qty": 412.5, "units": "kcal" },
+        "distance": { "qty": 6.42, "units": "km" },
+        "elevationUp": { "qty": 38, "units": "m" },
+        "intensity": { "qty": 9.8, "units": "kcal/hr·kg" },
+        "temperature": { "qty": 22.5, "units": "degC" },
+        "humidity": { "qty": 61, "units": "%" },
+        "heartRate": {
+          "min": { "qty": 96, "units": "bpm" },
+          "avg": { "qty": 148, "units": "bpm" },
+          "max": { "qty": 171, "units": "bpm" }
+        },
+        "heartRateData": [
+          { "date": "2026-10-22 07:10:00 +0300", "Min": 96, "Avg": 104, "Max": 118, "units": "count/min", "source": "Apple Watch" },
+          { "date": "2026-10-22 07:11:00 +0300", "Min": 118, "Avg": 131, "Max": 140, "units": "count/min", "source": "Apple Watch" },
+          { "date": "2026-10-22 07:12:00 +0300", "Min": 140, "Avg": 152, "Max": 171, "units": "count/min", "source": "Apple Watch" }
+        ],
+        "heartRateRecovery": [
+          { "date": "2026-10-22 07:53:00 +0300", "Min": 120, "Avg": 128, "Max": 150, "units": "count/min" },
+          { "date": "2026-10-22 07:54:00 +0300", "Min": 108, "Avg": 114, "Max": 120, "units": "count/min" }
+        ],
+        "stepCount": [
+          { "date": "2026-10-22 07:10:00 +0300", "qty": 162, "units": "count" },
+          { "date": "2026-10-22 07:11:00 +0300", "qty": 168, "units": "count" }
+        ],
+        "walkingAndRunningDistance": [
+          { "date": "2026-10-22 07:10:00 +0300", "qty": 0.151, "units": "km" }
+        ],
+        "route": [
+          { "latitude": 32.0853, "longitude": 34.7818, "altitude": 12.1, "timestamp": "2026-10-22 07:10:00 +0300", "speed": 2.6, "course": 180.5, "horizontalAccuracy": 4.2, "verticalAccuracy": 3.1 },
+          { "latitude": 32.0849, "longitude": 34.7819, "altitude": 12.4, "timestamp": "2026-10-22 07:10:05 +0300", "speed": 2.7, "course": 181.0, "horizontalAccuracy": 4.0, "verticalAccuracy": 3.0 }
+        ]
+      },
+      {
+        "id": "11111111-2222-3333-4444-555555555555",
+        "name": "Traditional Strength Training",
+        "start": "2026-10-22 18:30:00 +0300",
+        "end": "2026-10-22 19:22:00 +0300",
+        "duration": 3120,
+        "location": "Indoor",
+        "activeEnergyBurned": { "qty": 260, "units": "kcal" },
+        "avgHeartRate": { "qty": 118, "units": "bpm" },
+        "maxHeartRate": { "qty": 152, "units": "bpm" }
+      }
+    ]
+  }
+}
