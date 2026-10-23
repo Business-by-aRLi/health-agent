@@ -17,7 +17,17 @@ const DATE = { type: "string", description: "YYYY-MM-DD (לפי השעון המ�
 
 // strict: true + additionalProperties: false מבטיחים שהקלט תואם לסכימה בדיוק.
 // שדות אופציונליים מוגדרים כ-nullable ועדיין ב-required, כפי ש-strict דורש.
-export const TOOLS: Tool[] = [
+// 🧠 ל-strict יש מגבלות מצטברות לבקשה: עד 20 כלים, עד 16 פרמטרים עם union type
+//    (כולל ["string", "null"]), ועד 24 פרמטרים אופציונליים. לכן strict שמור לכלי כתיבה
+//    קטנים. כלי קריאה, וכלי כתיבה עם הרבה שדות nullable, רצים בלי strict, והקלט שלהם
+//    נבדק כאן בקוד (dateRange, בדיקות טווח ו-enum). הבדיקות מחשבות את המגבלות אוטומטית.
+const NON_STRICT = new Set([
+  "get_daily_summaries", "get_workouts", "get_workout_detail", "get_sleep", "get_trend", "get_samples", "get_events",
+  "update_profile", "add_medication", "log_event",
+]);
+export const STRICT_LIMITS = { tools: 20, unionParams: 16, optionalParams: 24 };
+
+const TOOL_DEFS: Tool[] = [
   {
     name: "get_daily_summaries",
     description:
@@ -341,6 +351,8 @@ export const TOOLS: Tool[] = [
   },
 ];
 
+export const TOOLS: Tool[] = TOOL_DEFS.map((t) => (NON_STRICT.has(t.name) ? { ...t, strict: false } : t));
+
 // ---------------------------------------------------------------------------
 // מימוש
 // ---------------------------------------------------------------------------
@@ -564,6 +576,10 @@ export async function executeTool(name: string, input: Input, ctx: ToolContext):
       }
       if (patch.birth_date && !ISO_DATE.test(String(patch.birth_date))) throw new ToolInputError("birth_date בפורמט YYYY-MM-DD");
       if (patch.sex && !["female", "male", "other"].includes(String(patch.sex))) throw new ToolInputError("sex: female | male | other");
+      if (patch.height_cm !== undefined && !(Number(patch.height_cm) >= 100 && Number(patch.height_cm) <= 250)) throw new ToolInputError("height_cm בין 100 ל-250");
+      for (const k of ["display_name", "activity_level", "injuries_notes", "training_background"]) {
+        if (patch[k] !== undefined && typeof patch[k] !== "string") throw new ToolInputError(`${k} חייב להיות טקסט`);
+      }
       if (input.dietary_notes) patch.dietary_prefs = { notes: input.dietary_notes };
       if (!Object.keys(patch).length) return { ok: true, changed: [] };
       // שינוי sex ממשתמשת עם מעקב מחזור פעיל: מכבים את המעקב, אחרת ה-constraint יחסום
@@ -633,10 +649,12 @@ export async function executeTool(name: string, input: Input, ctx: ToolContext):
     case "add_medication": {
       const name = String(input.name ?? "").trim();
       if (!name) throw new ToolInputError("name ריק");
+      if (!["medication", "supplement"].includes(String(input.kind))) throw new ToolInputError("kind: medication | supplement");
+      if (input.dose != null && !Number.isFinite(Number(input.dose))) throw new ToolInputError("dose חייב להיות מספר");
       if (input.started_on && !ISO_DATE.test(String(input.started_on))) throw new ToolInputError("started_on בפורמט YYYY-MM-DD");
       const { data, error } = await db.from("medications").insert({
-        user_id: userId, kind: input.kind, name, dose: input.dose, dose_unit: input.dose_unit,
-        frequency: input.frequency, timing: input.timing, reason: input.reason, started_on: input.started_on,
+        user_id: userId, kind: input.kind, name, dose: input.dose ?? null, dose_unit: input.dose_unit ?? null,
+        frequency: input.frequency ?? null, timing: input.timing ?? null, reason: input.reason ?? null, started_on: input.started_on ?? null,
       }).select("id").single();
       if (error) throw error;
       return { ok: true, medication_id: data.id };
@@ -679,7 +697,10 @@ export async function executeTool(name: string, input: Input, ctx: ToolContext):
       if (ended && ended < started) throw new ToolInputError("ended_at לפני started_at");
       const severity = input.severity === null || input.severity === undefined ? null : Number(input.severity);
       if (severity !== null && !(severity >= 1 && severity <= 10)) throw new ToolInputError("severity בין 1 ל-10");
-      const details = Object.fromEntries(Object.entries((input.details ?? {}) as Input).filter(([, v]) => v !== null && v !== undefined));
+      const raw = input.details ?? {};
+      if (typeof raw !== "object" || Array.isArray(raw)) throw new ToolInputError("details חייב להיות אובייקט");
+      const details = Object.fromEntries(Object.entries(raw as Input)
+        .filter(([k, v]) => ["triggers", "medication_taken", "aura", "location", "symptoms"].includes(k) && v !== null && v !== undefined));
       const { data, error } = await db.from("health_events").insert({
         user_id: userId, kind, label_he: input.label_he ?? null, started_at: started, ended_at: ended,
         severity, details, notes: input.notes ?? null, source_message_id: ctx.messageId ?? null,

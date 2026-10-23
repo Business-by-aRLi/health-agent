@@ -151,10 +151,30 @@ Deno.test("עזרים: שבוע מתחיל ביום ראשון, גיל, דילו
   assertEquals(parts.join("\n\n"), long);
 });
 
-Deno.test("כלים: כולם strict עם additionalProperties: false, וכל property ב-required", () => {
+Deno.test("כלים: additionalProperties: false, כל property ב-required, ומגבלות strict של ה-API", async () => {
+  const { STRICT_LIMITS } = await import("../../supabase/functions/_shared/agent/tools.ts");
+  const strict = TOOLS.filter((t) => t.strict);
+  // סופרים כמו ה-API: כל פרמטר (גם מקונן) עם type array או anyOf, וכל פרמטר שלא ב-required
+  let unions = 0, optional = 0;
+  const walk = (schema: Record<string, unknown>) => {
+    const props = (schema.properties ?? {}) as Record<string, Record<string, unknown>>;
+    const req = (schema.required ?? []) as string[];
+    for (const [k, v] of Object.entries(props)) {
+      if (Array.isArray(v.type) || v.anyOf) unions++;
+      if (!req.includes(k)) optional++;
+      if (v.properties) walk(v);
+    }
+  };
+  for (const t of strict) walk(t.input_schema as unknown as Record<string, unknown>);
+  assert(strict.length <= STRICT_LIMITS.tools, `${strict.length} strict tools`);
+  assert(unions <= STRICT_LIMITS.unionParams, `${unions} union-type params in strict tools`);
+  assert(optional <= STRICT_LIMITS.optionalParams, `${optional} optional params in strict tools`);
+  for (const name of ["intake_update", "log_measurement", "remember", "set_goal", "add_health_condition"]) {
+    assert(strict.some((t) => t.name === name), `${name} should stay strict`);
+  }
+  assertEquals(new Set(TOOLS.map((t) => t.name)).size, TOOLS.length, "unique names");
   for (const t of TOOLS) {
     const schema = t.input_schema as unknown as { properties: Record<string, unknown>; required: string[]; additionalProperties: boolean };
-    assertEquals(t.strict, true, t.name);
     assertEquals(schema.additionalProperties, false, t.name);
     assertEquals(Object.keys(schema.properties).sort(), [...schema.required].sort(), t.name);
   }
