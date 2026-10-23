@@ -23,7 +23,10 @@ import { prepareHistory } from "../_shared/agent/history.ts";
 
 declare const EdgeRuntime: { waitUntil(p: Promise<unknown>): void };
 
-const anthropic = new Anthropic(); // ANTHROPIC_API_KEY מה-secrets של Supabase
+// ANTHROPIC_API_KEY מה-secrets של Supabase. מפתח שלא משויך ל-workspace מחייב גם את
+// ה-header של ה-workspace, ולכן אם הוגדר ANTHROPIC_WORKSPACE_ID הוא נשלח בכל בקשה.
+const workspaceId = Deno.env.get("ANTHROPIC_WORKSPACE_ID");
+const anthropic = new Anthropic(workspaceId ? { defaultHeaders: { "anthropic-workspace-id": workspaceId } } : {});
 
 const HISTORY_MESSAGES = 16;      // כמה הודעות קודמות נכנסות כהיסטוריה
 const HISTORY_HOURS = 72;         // ורק מה-72 שעות האחרונות
@@ -172,8 +175,10 @@ async function handleUpdate(db: SupabaseClient, update: TgUpdate): Promise<void>
     console.error("agent failed", e);
     const reason = e instanceof Anthropic.RateLimitError
       ? "יש עומס רגעי. נסו שוב בעוד דקה."
-      : e instanceof Anthropic.AuthenticationError
+      : e instanceof Anthropic.AuthenticationError || e instanceof Anthropic.PermissionDeniedError
       ? "יש בעיה במפתח ה-API של Claude. צריך לבדוק את ה-secret ב-Supabase."
+      : e instanceof Anthropic.BadRequestError
+      ? "יש בעיית הגדרה בחיבור ל-Claude (הפרטים בלוגים של הפונקציה)."
       : "משהו השתבש אצלי. נסו שוב בעוד רגע.";
     await sendMessage(chatId, reason);
   } finally {
