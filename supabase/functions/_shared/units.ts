@@ -15,7 +15,7 @@ export interface Normalized {
 const CONVERSIONS: Record<string, { unit: CanonicalUnit; factor: number }> = {
   // ספירה וקצב
   "count": { unit: "count", factor: 1 },
-  "count/min": { unit: "bpm", factor: 1 },
+  "count/min": { unit: "count/min", factor: 1 },   // "bpm" רק לדופק, ראו rateUnit
   "bpm": { unit: "bpm", factor: 1 },
   "beats/min": { unit: "bpm", factor: 1 },
   // זמן
@@ -48,6 +48,11 @@ const CONVERSIONS: Record<string, { unit: CanonicalUnit; factor: number }> = {
   "km/h": { unit: "m/s", factor: 1 / 3.6 },
   "mi/hr": { unit: "m/s", factor: 0.44704 },
   "mph": { unit: "m/s", factor: 0.44704 },
+  "m/hr": { unit: "m/s", factor: 1 / 3600 },
+  "m/h": { unit: "m/s", factor: 1 / 3600 },
+  // קצב (pace): תמיד שניות לק"מ
+  "s/km": { unit: "s/km", factor: 1 },
+  "s/mi": { unit: "s/km", factor: 1 / 1.609344 },
   // שונות
   "%": { unit: "%", factor: 1 },
   "mmhg": { unit: "mmHg", factor: 1 },
@@ -69,6 +74,24 @@ export function normalize(value: number, unit: string | undefined | null): Norma
   const conv = CONVERSIONS[key];
   if (!conv) return { value, unit: u || "unknown" };
   return { value: round(value * conv.factor), unit: conv.unit };
+}
+
+/**
+ * HealthKit מחזיר count/min גם לדופק, גם לקצב צעדים וגם לנשימות.
+ * "bpm" (פעימות לדקה) נכון רק למדדי לב, ולכן מתייגים לפי שם המדד.
+ */
+export function rateUnit(metric: string, n: Normalized): Normalized {
+  if (n.unit === "count/min" && /heart|pulse|(^|_)hr($|_)/i.test(metric)) return { ...n, unit: "bpm" };
+  return n;
+}
+
+/**
+ * באג שנצפה ב-payload אמיתי: HAE שולח avgSpeed/maxSpeed עם units "km" (במקום "km/hr").
+ * שדה מהירות עם יחידת מרחק בלבד = לשעה.
+ */
+export function speedUnitFix(key: string, unit: string | undefined): string | undefined {
+  if (unit && /speed/i.test(key) && /^(km|mi|m)$/i.test(unit.trim())) return `${unit.trim()}/hr`;
+  return unit;
 }
 
 /** מעגל ל-6 ספרות כדי לא לשמור רעש של floating point (0.30000000000000004) */

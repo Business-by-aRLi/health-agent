@@ -2,7 +2,7 @@
 import { assert, assertAlmostEquals, assertEquals, assertThrows } from "@std/assert";
 import { adaptHealthAutoExport, AdapterError, snake } from "../../supabase/functions/_shared/adapters/health-auto-export.ts";
 import { parseHaeDate } from "../../supabase/functions/_shared/time.ts";
-import { normalize } from "../../supabase/functions/_shared/units.ts";
+import { normalize, rateUnit, speedUnitFix } from "../../supabase/functions/_shared/units.ts";
 
 const ctx = { timezone: "Asia/Jerusalem", cycleTracking: false };
 const load = (name: string) => JSON.parse(Deno.readTextFileSync(new URL(`../fixtures/${name}`, import.meta.url)));
@@ -19,7 +19,13 @@ Deno.test("normalize: המרות יחידות", () => {
   assertEquals(normalize(1255.2, "kJ").unit, "kcal");
   assertEquals(normalize(6.42, "km"), { value: 6420, unit: "m" });
   assertAlmostEquals(normalize(150, "lb").value, 68.04, 0.01);
-  assertEquals(normalize(72, "count/min"), { value: 72, unit: "bpm" });
+  assertEquals(normalize(72, "count/min"), { value: 72, unit: "count/min" });
+  assertEquals(rateUnit("heart_rate", normalize(72, "count/min")).unit, "bpm");
+  assertEquals(rateUnit("step_cadence", normalize(72, "count/min")).unit, "count/min");
+  assertAlmostEquals(normalize(1618.4, "m/hr").value, 0.4496, 0.0001);
+  assertAlmostEquals(normalize(887.9, "s/mi").value, 551.7, 0.1);
+  assertEquals(speedUnitFix("avgSpeed", "km"), "km/hr");
+  assertEquals(speedUnitFix("distance", "km"), "km");
   assertEquals(normalize(7.5, "hr"), { value: 450, unit: "min" });
   assertEquals(normalize(3, "furlongs"), { value: 3, unit: "furlongs" }); // לא מוכר = לא נזרק
 });
@@ -176,4 +182,32 @@ Deno.test("sleep: inBed = 0 מהשעון (payload אמיתי) → זמן במי�
   assertEquals(s.sleep_date, "2026-10-22");
   assertEquals(s.total_asleep_min, 433.4);
   assertEquals(s.in_bed_min, 459.45);
+});
+
+Deno.test("workouts: laps / splits / activities → intervals (מבנה מה-payload האמיתי)", () => {
+  const { batch, warnings } = adaptHealthAutoExport(load("hae-sample.json"), ctx);
+  const run = batch.workouts[0];
+  const kinds = run.intervals.map((i) => `${i.kind}#${i.idx}`);
+  assertEquals(kinds, ["split_1km#1", "split_1km#2", "split_1mi#1", "lap#1", "activity#1"]);
+
+  const km2 = run.intervals[1];
+  assertEquals([km2.distance_m, km2.speed_mps, km2.pace_s_per_km, km2.active_kcal], [1000, 2.56, 390, 66]);
+  assertEquals([km2.avg_hr, km2.max_hr, km2.min_hr], [151, 163, 136]);
+  assertEquals(km2.metrics.heart_rate_average.unit, "bpm");
+  assertAlmostEquals(km2.metrics.pace_mile.value, 390, 0.01); // s/mi → s/km
+  assertEquals([km2.active_s, km2.elapsed_s], [300.5, 310]);
+  assertEquals(run.intervals[4].meta.activityType, "running");
+
+  // לא משוכפל ב-raw, ו-events נשמר בלי warning
+  assert(!("laps" in run.raw) && !("splits" in run.raw));
+  assert("events" in run.raw);
+  assertEquals(warnings, []);
+});
+
+Deno.test("workouts: תיקוני יחידות מה-payload האמיתי", () => {
+  const run = adaptHealthAutoExport(load("hae-sample.json"), ctx).batch.workouts[0];
+  // avgSpeed {9.06, "km"} = קמ"ש → m/s
+  assertEquals(run.metrics.avg_speed, { value: 2.516667, unit: "m/s" });
+  // קצב צעדים הוא לא דופק
+  assertEquals(run.metrics.step_cadence, { value: 165.2, unit: "count/min" });
 });

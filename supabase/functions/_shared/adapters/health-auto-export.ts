@@ -13,11 +13,12 @@
 //    המתאם כתוב באופן הגנתי: שדות חסרים לא מפילים אותו.
 // =====================================================================
 
-import { normalize, round } from "../units.ts";
+import { normalize, rateUnit, round, speedUnitFix } from "../units.ts";
 import { localDate, parseHaeDate } from "../time.ts";
 import type {
   AdapterContext,
   AdapterResult,
+  CanonicalInterval,
   CanonicalRoutePoint,
   CanonicalSample,
   CanonicalSleep,
@@ -79,6 +80,11 @@ const WORKOUT_CORE_KEYS = new Set([
   "activeEnergyBurned", "activeEnergy", "totalEnergy", "distance", "elevationUp",
   "heartRate", "avgHeartRate", "maxHeartRate", "minHeartRate", "route",
 ]);
+
+// מערכים בתוך אימון שהם קטעים (laps/splits/...) → workout_intervals
+const INTERVAL_ARRAYS: Record<string, string> = { laps: "lap", segments: "segment", activities: "activity", splits: "split" };
+// events הם רק סמנים של התחלה/סוף ל-laps ו-segments (בלי מדדים). נשמרים ב-raw בלי warning.
+const MARKER_ARRAYS = new Set(["events"]);
 
 // שלבי שינה כפי שמגיעים מ-HealthKit (באנגלית, גם בטלפון בעברית)
 const SLEEP_STAGE_KEYS: Record<string, "in_bed" | "asleep" | "awake" | "core" | "deep" | "rem"> = {
@@ -149,13 +155,13 @@ function adaptMetricPoint(name: string, units: string | undefined, p: Json, warn
 
   // 1) המקרה הנפוץ: { date, qty }
   if (isNum(p.qty)) {
-    const n = normalize(p.qty, units);
+    const n = rateUnit(metric, normalize(p.qty, units));
     return [{ metric, start_at: start, end_at: end, value: n.value, unit: n.unit, meta }];
   }
 
   // 2) דופק ודומיו: { Min, Avg, Max }
   if (isNum(p.Avg) || isNum(p.avg)) {
-    const avg = normalize((p.Avg ?? p.avg) as number, units);
+    const avg = rateUnit(metric, normalize((p.Avg ?? p.avg) as number, units));
     const min = numOrNull(p.Min ?? p.min);
     const max = numOrNull(p.Max ?? p.max);
     return [{
@@ -174,7 +180,7 @@ function adaptMetricPoint(name: string, units: string | undefined, p: Json, warn
     return [{ metric, start_at: start, end_at: end, value: code, unit: "category", meta: { ...meta, category } }];
   }
   if (isNum(p.value)) {
-    const n = normalize(p.value, units);
+    const n = rateUnit(metric, normalize(p.value, units));
     return [{ metric, start_at: start, end_at: end, value: n.value, unit: n.unit, meta }];
   }
 
@@ -326,11 +332,20 @@ function adaptWorkout(w: Json, warnings: string[]): CanonicalWorkout | undefined
     raw: {},
     samples: [],
     route: [],
+    intervals: [],
   };
 
   for (const [key, value] of Object.entries(w)) {
     if (key === "route") {
       workout.route = adaptRoute(asArray(value));
+      continue;
+    }
+    if (key in INTERVAL_ARRAYS) {
+      workout.intervals.push(...adaptIntervals(INTERVAL_ARRAYS[key], value as Json[]));
+      continue;
+    }
+    if (MARKER_ARRAYS.has(key)) {
+      workout.raw[key] = value;
       continue;
     }
     if (Array.isArray(value)) {
@@ -344,7 +359,7 @@ function adaptWorkout(w: Json, warnings: string[]): CanonicalWorkout | undefined
     workout.raw[key] = value;
     if (WORKOUT_CORE_KEYS.has(key)) continue;
 
-    const q = readQty(value);
+    const q = readQty(value, key);
     if (q) workout.metrics[snake(key)] = q;
     else if (["string", "number", "boolean"].includes(typeof value)) workout.metrics[snake(key)] = value as string | number | boolean;
   }
@@ -362,10 +377,10 @@ function adaptWorkoutSeries(key: string, points: Json[]): CanonicalWorkoutSample
     if (!at) continue;
     const units = (p.units ?? p.unit) as string | undefined;
     if (isNum(p.qty)) {
-      const n = normalize(p.qty, units);
+      const n = rateUnit(metric, normalize(p.qty, units));
       out.push({ metric, at, value: n.value, unit: n.unit });
     } else if (isNum(p.Avg) || isNum(p.avg)) {
-      const avg = normalize((p.Avg ?? p.avg) as number, units);
+      const avg = rateUnit(metric, normalize((p.Avg ?? p.avg) as number, units));
       const min = numOrNull(p.Min ?? p.min);
       const max = numOrNull(p.Max ?? p.max);
       out.push({
@@ -376,6 +391,58 @@ function adaptWorkoutSeries(key: string, points: Json[]): CanonicalWorkoutSample
     }
   }
   return out;
+}
+
+/**
+ * laps / segments / activities: מערך של קטעים.
+ * splits: מערך של *סטים* (לכל ק"מ, לכל מייל), ובכל סט items. ה-kind נגזר מהיעד: split_1km, split_1mi.
+ * כל קטע: { start, end, index, activeDuration, elapsedDuration, metrics: { distance, speed, paceKilometre,
+ *           activeEnergy, heartRateAverage/Maximum/Minimum, ... } }   (נצפה ב-payload אמיתי, 23.10.2026)
+ */
+function adaptIntervals(kind: string, arr: Json[]): CanonicalInterval[] {
+  if (!Array.isArray(arr)) return [];
+  if (kind === "split") {
+    return arr.flatMap((set) => {
+      const t = readQty(set?.targetDistance);
+      const raw = set?.targetDistance as Json | undefined;
+      const label = raw && isNum(raw.qty) ? `split_${raw.qty}${String(raw.units ?? "")}` : `split_${t?.value ?? "x"}`;
+      return asArray(set?.items).map((it, i) => adaptInterval(label, it, i));
+    }).filter(isDefined);
+  }
+  return asArray(arr).map((it, i) => adaptInterval(kind, it, i)).filter(isDefined);
+}
+
+function adaptInterval(kind: string, it: Json, i: number): CanonicalInterval | undefined {
+  const start = parseHaeDate(it.start);
+  const end = parseHaeDate(it.end);
+  if (!start || !end) return undefined;
+  const metrics: CanonicalInterval["metrics"] = {};
+  for (const [k, v] of Object.entries((it.metrics ?? {}) as Json)) {
+    const q = readQty(v, k);
+    if (q) metrics[snake(k)] = q;
+  }
+  const val = (k: string, unit?: string) => (metrics[k] && (!unit || metrics[k].unit === unit) ? metrics[k].value : null);
+  const meta: Json = {};
+  for (const k of ["boundaryKind", "boundaryOrigin", "isPartial", "eventIndex", "activityType", "activityTypeCode", "configuration", "id"]) {
+    if (it[k] !== undefined) meta[k] = it[k];
+  }
+  return {
+    kind,
+    idx: isNum(it.index) ? it.index : i + 1,
+    start_at: start,
+    end_at: end,
+    active_s: numOrNull(it.activeDuration) ?? numOrNull(it.duration),
+    elapsed_s: numOrNull(it.elapsedDuration) ?? numOrNull(it.duration),
+    distance_m: val("distance", "m"),
+    speed_mps: val("speed", "m/s"),
+    pace_s_per_km: val("pace_kilometre", "s/km"),
+    active_kcal: val("active_energy", "kcal"),
+    avg_hr: val("heart_rate_average"),
+    max_hr: val("heart_rate_maximum"),
+    min_hr: val("heart_rate_minimum"),
+    metrics,
+    meta,
+  };
 }
 
 function adaptRoute(points: Json[]): CanonicalRoutePoint[] {
@@ -399,11 +466,13 @@ function adaptRoute(points: Json[]): CanonicalRoutePoint[] {
 
 // ---------------------------------------------------------------- helpers
 
-function readQty(v: unknown): { value: number; unit: string } | null {
+/** { qty, units } → ערך מנורמל. key (אם יש) משמש לתיקון יחידות מהירות ולתיוג bpm */
+function readQty(v: unknown, key = ""): { value: number; unit: string } | null {
   if (!v || typeof v !== "object" || Array.isArray(v)) return null;
   const o = v as Json;
   if (!isNum(o.qty)) return null;
-  return normalize(o.qty, (o.units ?? o.unit) as string | undefined);
+  const units = speedUnitFix(key, (o.units ?? o.unit) as string | undefined);
+  return rateUnit(snake(key), normalize(o.qty, units));
 }
 
 /** activeEnergy כמערך של נקודות: מסכמים */

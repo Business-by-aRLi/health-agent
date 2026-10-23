@@ -36,6 +36,8 @@ begin
   assert (s ->> 'workout_samples')::int = 8, format('workout_samples: %s', s ->> 'workout_samples');
   assert (s ->> 'route_points')::int = 2,    'route';
   assert (s ->> 'sleep_sessions')::int = 1,  'sleep';
+  assert (s ->> 'intervals')::int = 5,        format('intervals: %s', s ->> 'intervals');
+  assert (select pace_s_per_km from public.workout_intervals where kind = 'split_1km' and idx = 2) = 390, 'split pace';
   assert s -> 'days_affected' = '["2026-10-22"]'::jsonb, format('days: %s', s -> 'days_affected');
 
   select * into d from public.daily_summaries where user_id = v_uid and day = '2026-10-22';
@@ -70,6 +72,7 @@ begin
   assert (select count(*) from public.workouts) = 2, 'no duplicate workouts';
   assert (select count(*) from public.workout_samples) = n_ws, 'series upserted, not appended';
   assert (select count(*) from public.workout_route_points) = n_route, 'route upserted, not appended';
+  assert (select count(*) from public.workout_intervals) = 5, 'intervals upserted, not appended';
   assert (select notes from public.workouts where external_id = '8F1A2B3C-0000-4D5E-9F10-ABCDEF123456') = 'ברך שמאל הציקה',
          'user notes survive re-ingest';
   assert (select perceived_effort from public.workouts where external_id = '8F1A2B3C-0000-4D5E-9F10-ABCDEF123456') = 7,

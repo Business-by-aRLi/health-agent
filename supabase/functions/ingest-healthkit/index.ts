@@ -7,17 +7,27 @@
 //   לכן הפונקציה נפרסת עם verify_jwt = false, ומאמתת בעצמה.
 //
 // זרימה: auth → ingest_events (raw) → adapter → RPC אחד בטרנזקציה → stats
+//
+// POST /functions/v1/ingest-healthkit/replay   (תחזוקה)
+// מריץ מחדש payloads שמורים מ-ingest_events דרך המתאם העדכני. משתמשים בזה אחרי תיקון
+// במתאם, כדי שהתיקון יחול גם על מידע שכבר נקלט. בזכות ה-upserts זה אידמפוטנטי.
+// Auth: header x-replay-secret = REPLAY_SECRET (Edge Function secret). בלי secret מוגדר → 404.
+// Body: { "event_ids": [1, 2, 3] }  או  { "all": true }
 // =====================================================================
 
 import { adaptHealthAutoExport, AdapterError } from "../_shared/adapters/health-auto-export.ts";
 import { bearerToken, error, json, sha256Hex } from "../_shared/http.ts";
 import { serviceClient } from "../_shared/supabase.ts";
+import type { SupabaseClient } from "@supabase/supabase-js";
+
+type Profile = { timezone: string; cycle_tracking_enabled: boolean };
 
 // payload גדול מזה = כנראה backfill של הרבה זמן בבת אחת. עדיף לפצל (ראו docs/setup)
 const MAX_BYTES = 25 * 1024 * 1024;
 
 Deno.serve(async (req) => {
   if (req.method !== "POST") return error(405, "method_not_allowed", "רק POST");
+  if (new URL(req.url).pathname.endsWith("/replay")) return await replay(req);
 
   // ---- 1. אימות
   const token = bearerToken(req);
@@ -43,7 +53,7 @@ Deno.serve(async (req) => {
     .eq("id", secret.source_id)
     .single();
   if (!source || source.status !== "active") return error(401, "source_inactive", "המקור בוטל");
-  const profile = source.profiles as unknown as { timezone: string; cycle_tracking_enabled: boolean };
+  const profile = source.profiles as unknown as Profile;
 
   // ---- 2. קריאת הגוף
   const text = await req.text();
@@ -63,11 +73,25 @@ Deno.serve(async (req) => {
     .single();
   if (eventErr || !event) return error(500, "db_error", "שמירת ה-payload נכשלה");
 
-  const fail = async (status: number, code: string, message: string) => {
+  const r = await processEvent(db, event.id, source.id, profile, payload);
+  return r.ok ? json({ ok: true, event_id: event.id, ...r.result }) : error(r.status, r.code, r.message, { event_id: event.id });
+});
+
+// ---------------------------------------------------------------------------
+// המרה + כתיבה + עדכון סטטוס. משותף לקליטה רגילה ול-replay.
+// ---------------------------------------------------------------------------
+type ProcessResult =
+  | { ok: true; result: Record<string, unknown> }
+  | { ok: false; status: number; code: string; message: string };
+
+async function processEvent(
+  db: SupabaseClient, eventId: number, sourceId: string, profile: Profile, payload: unknown,
+): Promise<ProcessResult> {
+  const fail = async (status: number, code: string, message: string): Promise<ProcessResult> => {
     await db.from("ingest_events")
       .update({ status: "failed", error: `${code}: ${message}`, processed_at: new Date().toISOString() })
-      .eq("id", event.id);
-    return error(status, code, message, { event_id: event.id });
+      .eq("id", eventId);
+    return { ok: false, status, code, message };
   };
 
   // ---- 4. המרה למודל הקנוני
@@ -84,18 +108,58 @@ Deno.serve(async (req) => {
 
   // ---- 5. כתיבה אטומית
   const { data: stats, error: rpcErr } = await db.rpc("ingest_canonical_batch", {
-    p_source_id: source.id,
+    p_source_id: sourceId,
     p_batch: adapted.batch,
   });
   if (rpcErr) {
-    console.error("ingest_canonical_batch failed", { event_id: event.id, rpcErr });
+    console.error("ingest_canonical_batch failed", { event_id: eventId, rpcErr });
     return await fail(500, "write_failed", rpcErr.message);
   }
 
   const result = { ...stats, warnings: adapted.warnings };
   await db.from("ingest_events")
-    .update({ status: "processed", stats: result, processed_at: new Date().toISOString() })
-    .eq("id", event.id);
+    .update({ status: "processed", error: null, stats: result, processed_at: new Date().toISOString() })
+    .eq("id", eventId);
+  return { ok: true, result };
+}
 
-  return json({ ok: true, event_id: event.id, ...result });
-});
+// ---------------------------------------------------------------------------
+// replay: הרצה מחדש של payloads שמורים
+// ---------------------------------------------------------------------------
+async function replay(req: Request): Promise<Response> {
+  const secret = Deno.env.get("REPLAY_SECRET");
+  if (!secret) return error(404, "not_found", "לא נמצא");
+  // משווים hash-ים ולא מחרוזות, כדי שזמן ההשוואה לא ידליף כמה תווים נכונים (timing attack)
+  const given = req.headers.get("x-replay-secret") ?? "";
+  if ((await sha256Hex(given)) !== (await sha256Hex(secret))) return error(401, "invalid_secret", "לא מורשה");
+
+  let body: { event_ids?: number[]; all?: boolean };
+  try {
+    body = await req.json();
+  } catch {
+    return error(400, "invalid_json", "הגוף אינו JSON תקין");
+  }
+
+  const db = serviceClient();
+  let q = db.from("ingest_events")
+    .select("id, source_id, payload, data_sources!inner(status, profiles!inner(timezone, cycle_tracking_enabled))")
+    .order("id")
+    .limit(500);
+  if (body.event_ids?.length) q = q.in("id", body.event_ids);
+  else if (!body.all) return error(400, "missing_target", "צריך event_ids או all: true");
+
+  const { data: events, error: qErr } = await q;
+  if (qErr) return error(500, "db_error", qErr.message);
+
+  const results = [];
+  for (const ev of events ?? []) {
+    const src = ev.data_sources as unknown as { status: string; profiles: Profile };
+    if (src.status !== "active") {
+      results.push({ event_id: ev.id, ok: false, code: "source_inactive" });
+      continue;
+    }
+    const r = await processEvent(db, ev.id, ev.source_id, src.profiles, ev.payload);
+    results.push(r.ok ? { event_id: ev.id, ok: true, ...r.result } : { event_id: ev.id, ...r });
+  }
+  return json({ ok: results.every((r) => r.ok), replayed: results.length, results });
+}

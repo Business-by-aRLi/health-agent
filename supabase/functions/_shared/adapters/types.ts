@@ -43,6 +43,25 @@ export interface CanonicalRoutePoint {
   v_accuracy_m?: number | null;
 }
 
+/** קטע בתוך אימון: הקפה (lap), מקטע (segment), ספליט (split_1km / split_1mi), פעילות (activity) */
+export interface CanonicalInterval {
+  kind: string;
+  idx: number;
+  start_at: string;
+  end_at: string;
+  active_s?: number | null;
+  elapsed_s?: number | null;
+  distance_m?: number | null;
+  speed_mps?: number | null;
+  pace_s_per_km?: number | null;
+  active_kcal?: number | null;
+  avg_hr?: number | null;
+  max_hr?: number | null;
+  min_hr?: number | null;
+  metrics: Record<string, { value: number; unit: CanonicalUnit }>;
+  meta: Record<string, unknown>;
+}
+
 export interface CanonicalWorkout {
   external_id: string;
   activity_name: string;
@@ -65,6 +84,7 @@ export interface CanonicalWorkout {
   raw: Record<string, unknown>;
   samples: CanonicalWorkoutSample[];
   route: CanonicalRoutePoint[];
+  intervals: CanonicalInterval[];
 }
 
 export interface CanonicalSleep {
