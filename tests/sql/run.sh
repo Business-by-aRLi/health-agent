@@ -6,9 +6,13 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 PGBIN="${PGBIN:-$(ls -d /usr/lib/postgresql/*/bin 2>/dev/null | sort -V | tail -1)}"
 TMP="$(mktemp -d)"
 PORT="${PGPORT:-54329}"
-trap '"$PGBIN/pg_ctl" -D "$TMP/data" stop -m immediate >/dev/null 2>&1 || true; rm -rf "$TMP"' EXIT
-
 run_pg() { if [ "$(id -u)" = 0 ]; then su postgres -s /bin/bash -c "$*"; else bash -c "$*"; fi; }
+# pg_ctl מסרב לרוץ כ-root, ולכן גם הניקוי עובר דרך run_pg (אחרת השרת נשאר באוויר אחרי כישלון)
+cleanup() {
+  run_pg "'$PGBIN/pg_ctl' -D '$TMP/data' stop -m immediate" >/dev/null 2>&1 || true
+  rm -rf "$TMP"
+}
+trap cleanup EXIT
 chmod 777 "$TMP"
 run_pg "'$PGBIN/initdb' -D '$TMP/data' -U postgres -A trust >/dev/null"
 run_pg "'$PGBIN/pg_ctl' -D '$TMP/data' -o '-p $PORT -k $TMP' -l '$TMP/log' start -w >/dev/null"
@@ -27,4 +31,5 @@ deno run --allow-read "$ROOT/tests/adapters/print-canonical.ts" "$ROOT/tests/fix
 echo "→ integration tests"
 "${PSQL[@]}" -v batch="$(cat "$TMP/batch.json")" -v batch2="$(cat "$TMP/batch2.json")" -f "$ROOT/tests/sql/ingest.test.sql"
 "${PSQL[@]}" -v batch3="$(cat "$TMP/batch3.json")" -f "$ROOT/tests/sql/domain.test.sql"
+"${PSQL[@]}" -f "$ROOT/tests/sql/agent.test.sql"
 echo "✓ all SQL tests passed"
