@@ -35,36 +35,55 @@ select public.rotate_ingest_token('<source_id>'::uuid);  -- הישן מפסיק 
 
 ## 2. הגדרת אוטומציות באפליקציה
 
-ב-Health Auto Export: **Automations → New Automation → REST API**. יוצרים **שתיים**: אחת למדדים ואחת לאימונים.
+לפי [המדריך הרשמי](https://help.healthyapps.dev/en/health-auto-export/automations/rest-api/). יוצרים **שתי** אוטומציות: מדדים ואימונים. כל אוטומציה מקבלת סוג מידע אחד.
 
-### אוטומציה א׳: Health Metrics
+**הדרך:** תפריט צד (☰) → **Automations** → **New Automation** → Automation Type: **REST API**
 
-| הגדרה | ערך |
+### אוטומציה א׳: מדדים
+
+| שדה | ערך |
 |---|---|
+| Automation Name | `Health Agent - Metrics` |
 | URL | `https://hwcgxyreboaqjoxrofgw.supabase.co/functions/v1/ingest-healthkit` |
-| Headers | `Authorization` = `Bearer hk_...` (הטוקן מסעיף 1, עם המילה Bearer ורווח) |
-| Export Format | JSON |
-| Export Version | הגרסה העדכנית (v2) |
-| Data Type | Health Metrics |
-| Metrics | Step Count, Heart Rate, Resting Heart Rate, Heart Rate Variability, Walking Heart Rate Average, Active Energy, Apple Exercise Time, Walking + Running Distance, **Sleep Analysis**, Weight, VO2 Max, Respiratory Rate, Blood Oxygen. אפשר גם הכול: מדד לא מוכר נשמר כמו שהוא |
-| Aggregate / Summarize | **מופעל**, קיבוץ לפי **שעות** (Hours) |
-| Sync Cadence | כל 15–30 דקות |
-| Date Range | מאז הסנכרון האחרון / היום |
+| Request Timeout | הארוך ביותר שיש |
+| Headers → Add Headers | שמאל: `Authorization` · ימין: `Bearer hk_...` (עם רווח אחרי Bearer) |
+| Data Type | **Health Metrics** → לבחור: Step Count, Heart Rate, Resting Heart Rate, Heart Rate Variability, Walking Heart Rate Average, Active Energy, Apple Exercise Time, Walking + Running Distance, Sleep Analysis, Weight, VO2 Max, Respiratory Rate, Blood Oxygen Saturation |
+| Export Format | **JSON** |
+| Export Version | **Version 2** |
+| Date Range | **Since Last Sync** |
+| Summarize Data | **ON** |
+| Time Grouping | **Hours** |
+| Batch Requests | **ON** |
+| Sync Cadence | `15` + `Minutes` |
 
-> 🧠 **למה aggregated לפי שעה?** צעדים נמדדים גם בשעון וגם בטלפון. כש-HAE מסכם, HealthKit מנכה את הכפילויות בין המכשירים, ולכן הסכום היומי נכון. דופק לפי שעה (min/avg/max) מספיק לתמונה יומית. הדופק המפורט של **אימונים** מגיע בנפרד, דקה-דקה, באוטומציה ב׳.
+> 🧠 **למה Summarize ON + Hours?** צעדים נמדדים גם בשעון וגם בטלפון. כשהאפליקציה מסכמת, HealthKit מנכה את הכפילויות ביניהם. דופק לפי שעה (min/avg/max) מספיק לתמונה יומית. הדופק המפורט של אימונים מגיע באוטומציה ב׳.
 
-### אוטומציה ב׳: Workouts
+### אוטומציה ב׳: אימונים
 
 אותו URL ואותו Header, ובנוסף:
 
-| הגדרה | ערך |
+| שדה | ערך |
 |---|---|
-| Data Type | Workouts |
-| Include Route Data | ✅ (מסלול GPS) |
-| Include Workout Metrics | ✅ (דופק, התאוששות דופק, צעדים, מרחק בתוך האימון) |
-| Sync Cadence | כל 30 דקות |
+| Automation Name | `Health Agent - Workouts` |
+| Data Type | **Workouts** |
+| Include Route Data | **ON** |
+| Include Workout Metrics | **ON** |
+| Time Grouping | **Minutes** (המדריך הרשמי דורש Minutes או Seconds כשמדדי אימון פעילים) |
+| Export Format / Version | JSON / Version 2 |
+| Date Range | Since Last Sync |
+| Batch Requests | **ON** |
+| Sync Cadence | `1` + `Hours` (מסלולים כבדים, ולכן פחות תכוף) |
 
----
+### אוטומציה ג׳ (בהמשך): מעקב מחזור
+
+Cycle Tracking הוא **סוג מידע נפרד** באפליקציה. נוסיף אותו רק אחרי שהשתיים הראשונות עובדות, כי צריך לוודא את פורמט ה-JSON שלו מול המתאם. ראו סעיף 3ב.
+
+### כדי שהסנכרון ירוץ ברקע
+
+- **Settings → General → Background App Refresh**: מופעל, גם ל-Health Auto Export.
+- להוסיף את ה-**widget** של Automations למסך הבית. לפי המדריך הרשמי זה עוזר להרצה ברקע.
+- iOS לא נותן גישה למידע בריאותי כשהטלפון נעול, ולכן הסנכרון רץ כשהטלפון פתוח. ב-Low Power Mode הוא עלול להתעכב.
+- תקלות מופיעות במסך האוטומציה תחת **View Activity Logs**.
 
 ## 3. בדיקה ראשונה
 
@@ -86,7 +105,7 @@ update public.profiles
  where id = '<ה-id שלך>'::uuid;
 ```
 
-ואז באוטומציה א׳ מוסיפים את מדדי **Cycle Tracking**: Menstrual Flow, Cervical Mucus Quality, Ovulation Test Result, Basal Body Temperature (ואת מה שמתועד אצלך). כיבוי: `cycle_tracking_enabled = false`.
+ואז יוצרים אוטומציה שלישית עם Data Type: **Cycle Tracking** (אותו URL ו-Header). אחרי הייצוא הראשון שלחי לי את ה-`warnings`, כי את פורמט ה-JSON של סוג המידע הזה עוד צריך לאמת מול המתאם. כיבוי: `cycle_tracking_enabled = false`.
 
 > הדאטהבייס עצמו לא מאפשר להפעיל מעקב בפרופיל שלא הוגדר כאישה (constraint). זו שכבת הגנה שלא תלויה בקוד.
 
