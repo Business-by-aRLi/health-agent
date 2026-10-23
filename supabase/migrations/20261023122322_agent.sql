@@ -116,7 +116,7 @@ begin
       values (v_code, p_user_id, now() + interval '15 minutes');
       exit;
     exception when unique_violation then
-      -- קוד תפוס, מגרילים שוב
+      null; -- קוד תפוס, מגרילים שוב
     end;
   end loop;
   return v_code;
