@@ -168,3 +168,70 @@ Deno.test("executeTool: כלי לא מוכר נדחה", async () => {
   const { executeTool } = await import("../../supabase/functions/_shared/agent/tools.ts");
   await assertRejects(() => executeTool("drop_tables", {}, { db: {} as never, userId: "u", timezone: "UTC" }), ToolInputError);
 });
+
+Deno.test("intake: סדר עדיפויות, 'none' ו-declined מכובדים, cooldown בין שאלות", async () => {
+  const { planIntake, INTAKE_KEYS, ASK_COOLDOWN_HOURS } = await import("../../supabase/functions/_shared/agent/intake.ts");
+  const facts = {
+    sex: "female", birth_date: null, height_cm: null, training_background: null, activity_level: null,
+    injuries_notes: null, dietary_prefs: {}, cycle_tracking_enabled: false,
+    has_recent_weight: true, active_goals: 0, medications: 0, conditions: 0,
+  };
+  const now = new Date("2026-10-24T12:00:00Z");
+
+  let plan = planIntake(facts, [], now);
+  assertEquals(plan.suggest?.key, "goals");
+  assert(!plan.missing.some((f) => f.key === "sex" || f.key === "weight"), "known fields not missing");
+  assert(plan.missing.some((f) => f.key === "cycle_tracking"), "cycle only offered to female");
+  assert(!planIntake({ ...facts, sex: "male" }, [], now).missing.some((f) => f.key === "cycle_tracking"));
+
+  // שאלנו על יעדים לפני שעה: אין שאלה נוספת עכשיו
+  const asked = [{ field: "goals", status: "asked" as const, ask_count: 1, last_asked_at: new Date(now.getTime() - 3600_000).toISOString() }];
+  assertEquals(planIntake(facts, asked, now).suggest, null);
+
+  // אחרי ה-cooldown: שואלים שוב על יעדים (פעם שנייה), ואחרי פעמיים עוברים הלאה
+  const later = new Date(now.getTime() + ASK_COOLDOWN_HOURS * 3600_000);
+  assertEquals(planIntake(facts, asked, later).suggest?.key, "goals");
+  assertEquals(planIntake(facts, [{ ...asked[0], ask_count: 2 }], later).suggest?.key, "birth_date");
+
+  // declined: לא שואלים שוב, אבל עדיין "לא ידוע". none: ידוע (אין)
+  plan = planIntake(facts, [
+    { field: "goals", status: "declined", ask_count: 1, last_asked_at: null },
+    { field: "medications", status: "none", ask_count: 1, last_asked_at: null },
+  ], now);
+  assertEquals(plan.suggest?.key, "birth_date");
+  assert(plan.missing.some((f) => f.key === "goals"));
+  assert(!plan.missing.some((f) => f.key === "medications"));
+
+  // כלי intake_update מכיר בדיוק את השדות של השאלון
+  const t = TOOLS.find((x) => x.name === "intake_update")!;
+  assertEquals((t.input_schema.properties as Record<string, { enum: string[] }>).field.enum, INTAKE_KEYS);
+});
+
+Deno.test("יומן בריאות: זמן מקומי ל-UTC, ותמונת מצב לכל אירוע (הלילה שלפני + היום הקודם)", async () => {
+  const { localDateTime, summarizeEvents } = await import("../../supabase/functions/_shared/agent/tools.ts");
+  assertEquals(localDateTime("2026-10-23 14:30", "Asia/Jerusalem"), "2026-10-23T11:30:00.000Z"); // קיץ, +03
+  assertEquals(localDateTime("2026-11-02 14:30", "Asia/Jerusalem"), "2026-11-02T12:30:00.000Z"); // חורף, +02
+  assertThrows(() => localDateTime("אתמול", "Asia/Jerusalem"), ToolInputError);
+
+  const res = summarizeEvents(
+    [
+      { id: "e1", kind: "migraine", label_he: "מיגרנה", started_at: "2026-10-20T05:00:00Z", ended_at: "2026-10-20T09:30:00Z", severity: 7, details: {}, notes: null },
+      { id: "e2", kind: "migraine", label_he: "מיגרנה", started_at: "2026-10-22T12:00:00Z", ended_at: null, severity: 5, details: {}, notes: null },
+    ],
+    [
+      { day: "2026-10-19", steps: 12000, workouts_count: 2, workout_min: 95, sleep_min: 450 },
+      { day: "2026-10-20", sleep_min: 330, hrv_avg: 31.26, resting_hr: 62 },
+      { day: "2026-10-21", sleep_min: 480 },
+      { day: "2026-10-22", sleep_min: 350 },
+    ],
+    "Asia/Jerusalem",
+  );
+  assertEquals(res.count, 2);
+  assertEquals(res.by_kind, { migraine: 2 });
+  assertEquals(res.avg_severity, 6);
+  assertEquals(res.avg_sleep_before_event_min, 340);
+  assertEquals(res.avg_sleep_all_nights_min, 403);
+  assertEquals(res.events[0].hours, 4.5);
+  assertEquals(res.events[0].snapshot.hrv, 31.3);
+  assertEquals(res.events[0].snapshot.prev_day, { steps: 12000, active_kcal: null, workouts: 2, workout_min: 95 });
+});

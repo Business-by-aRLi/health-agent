@@ -6,6 +6,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { localDate } from "../time.ts";
+import { intakeContextLines, loadIntake } from "./intake.ts";
 
 const HE_DAYS = ["ראשון", "שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת"];
 
@@ -18,6 +19,7 @@ export interface UserProfile {
   height_cm: number | null;
   activity_level: string | null;
   injuries_notes: string | null;
+  training_background: string | null;
   dietary_prefs: Record<string, unknown>;
   focus_areas: string[];
   cycle_tracking_enabled: boolean;
@@ -25,7 +27,7 @@ export interface UserProfile {
 
 export async function loadProfile(db: SupabaseClient, userId: string): Promise<UserProfile> {
   const { data, error } = await db.from("profiles")
-    .select("id, display_name, timezone, sex, birth_date, height_cm, activity_level, injuries_notes, dietary_prefs, focus_areas, cycle_tracking_enabled")
+    .select("id, display_name, timezone, sex, birth_date, height_cm, activity_level, injuries_notes, training_background, dietary_prefs, focus_areas, cycle_tracking_enabled")
     .eq("id", userId).single();
   if (error) throw error;
   return data as UserProfile;
@@ -51,7 +53,7 @@ export async function buildContext(db: SupabaseClient, p: UserProfile, now = new
   const time = now.toLocaleTimeString("he-IL", { timeZone: tz, hour: "2-digit", minute: "2-digit" });
   const dow = HE_DAYS[new Date(`${today}T12:00:00Z`).getUTCDay()];
 
-  const [summaries, goals, memory, workouts, sources, plan, meds, conditions] = await Promise.all([
+  const [summaries, goals, memory, workouts, sources, plan, meds, conditions, intake, events] = await Promise.all([
     db.from("daily_summaries")
       .select("day, steps, active_kcal, exercise_min, workouts_count, resting_hr, hrv_avg, sleep_min, sleep_efficiency, weight_kg, recovery_score, cycle, baselines")
       .eq("user_id", p.id).gte("day", weekAgo).lte("day", today).order("day"),
@@ -61,8 +63,12 @@ export async function buildContext(db: SupabaseClient, p: UserProfile, now = new
       .eq("user_id", p.id).order("start_at", { ascending: false }).limit(5),
     db.from("data_sources").select("provider, last_synced_at").eq("user_id", p.id).eq("status", "active"),
     db.from("nutrition_plans").select("plan_types, kcal_target, protein_g, carbs_g, fat_g, rules").eq("user_id", p.id).eq("status", "active").maybeSingle(),
-    db.from("medications").select("kind, name, dose, dose_unit, timing").eq("user_id", p.id).is("stopped_on", null),
-    db.from("health_conditions").select("name, status").eq("user_id", p.id).neq("status", "resolved"),
+    db.from("medications").select("id, kind, name, dose, dose_unit, frequency, timing, reason").eq("user_id", p.id).is("stopped_on", null),
+    db.from("health_conditions").select("id, name, status, diagnosed_on, notes").eq("user_id", p.id).order("status"),
+    loadIntake(db, p.id, now),
+    db.from("health_events").select("id, kind, label_he, started_at, ended_at, severity")
+      .eq("user_id", p.id).gte("started_at", new Date(now.getTime() - 14 * 86_400_000).toISOString())
+      .order("started_at", { ascending: false }).limit(15),
   ]);
 
   const rows = summaries.data ?? [];
@@ -82,6 +88,7 @@ export async function buildContext(db: SupabaseClient, p: UserProfile, now = new
     p.height_cm && `גובה: ${p.height_cm} ס"מ`,
     p.activity_level && `רמת פעילות: ${p.activity_level}`,
     p.injuries_notes && `מגבלות/פציעות: ${p.injuries_notes}`,
+    p.training_background && `רקע אימוני: ${p.training_background}`,
     Object.keys(p.dietary_prefs ?? {}).length && `תזונה: ${JSON.stringify(p.dietary_prefs)}`,
     `פוקוס: ${p.focus_areas.join(", ")}`,
     `מעקב מחזור: ${p.cycle_tracking_enabled ? "מופעל" : "כבוי"}`,
@@ -94,8 +101,14 @@ export async function buildContext(db: SupabaseClient, p: UserProfile, now = new
   lines.push(`זיכרון: ${m.length ? m.map((x) => `[memory_id=${x.id}|${x.category}] ${x.content}`).join(" ; ") : "ריק"}`);
 
   if (plan.data) lines.push(`תוכנית תזונה פעילה: ${JSON.stringify(plan.data)}`);
-  if (meds.data?.length) lines.push(`תרופות ותוספים פעילים: ${meds.data.map((x) => `${x.name}${x.dose ? ` ${x.dose}${x.dose_unit ?? ""}` : ""}${x.timing ? ` (${x.timing})` : ""}`).join("; ")}`);
-  if (conditions.data?.length) lines.push(`מצבים רפואיים: ${conditions.data.map((x) => `${x.name} (${x.status})`).join("; ")}`);
+  if (meds.data?.length) lines.push(`תרופות ותוספים פעילים: ${meds.data.map((x) => `[medication_id=${x.id}|${x.kind}] ${x.name}${x.dose ? ` ${x.dose}${x.dose_unit ?? ""}` : ""}${[x.frequency, x.timing, x.reason && `סיבה: ${x.reason}`].filter(Boolean).map((t) => ` (${t})`).join("")}`).join("; ")}`);
+  if (conditions.data?.length) lines.push(`רקע רפואי: ${conditions.data.map((x) => `[condition_id=${x.id}] ${x.name} (${x.status === "resolved" ? "עבר" : x.status === "suspected" ? "חשד" : "פעיל"}${x.diagnosed_on ? `, מ-${x.diagnosed_on}` : ""})${x.notes ? `: ${x.notes}` : ""}`).join("; ")}`);
+  lines.push(...intakeContextLines(intake));
+
+  const ev = events.data ?? [];
+  if (ev.length) {
+    lines.push(`יומן בריאות, 14 ימים אחרונים: ${ev.map((x) => `[event_id=${x.id}] ${new Date(x.started_at).toLocaleString("he-IL", { timeZone: tz, dateStyle: "short", timeStyle: "short" })} ${x.label_he ?? x.kind} (${x.kind})${x.severity ? ` עוצמה ${x.severity}` : ""}${x.ended_at ? "" : " (בלי שעת סיום)"}`).join("; ")}`);
+  }
 
   lines.push(`7 ימים אחרונים (יום | צעדים | קק"ל פעילות | דק' אימון | אימונים | דופק מנוחה | HRV | שינה | יעילות | משקל | התאוששות${p.cycle_tracking_enabled ? " | מחזור" : ""}):`);
   for (const d of rows) {
