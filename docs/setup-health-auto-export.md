@@ -76,6 +76,20 @@ select public.rotate_ingest_token('<source_id>'::uuid);  -- הישן מפסיק 
 
 ---
 
+## 3ב. מעקב מחזור (אופציונלי, רק לפרופיל נשי)
+
+כשהמעקב כבוי (ברירת המחדל), נתוני מחזור **לא נקלטים בכלל**, גם אם האפליקציה שולחת אותם. להפעלה, ב-SQL Editor:
+
+```sql
+update public.profiles
+   set sex = 'female', cycle_tracking_enabled = true
+ where id = '<ה-id שלך>'::uuid;
+```
+
+ואז באוטומציה א׳ מוסיפים את מדדי **Cycle Tracking**: Menstrual Flow, Cervical Mucus Quality, Ovulation Test Result, Basal Body Temperature (ואת מה שמתועד אצלך). כיבוי: `cycle_tracking_enabled = false`.
+
+> הדאטהבייס עצמו לא מאפשר להפעיל מעקב בפרופיל שלא הוגדר כאישה (constraint). זו שכבת הגנה שלא תלויה בקוד.
+
 ## 4. ייבוא היסטוריה (backfill)
 
 כדי שלסוכן יהיה baseline (ממוצע אישי של 28 יום) מהיום הראשון:
