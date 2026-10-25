@@ -9,7 +9,8 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type Anthropic from "@anthropic-ai/sdk";
 import { INTAKE_KEYS } from "./intake.ts";
-import { localDate } from "../time.ts";
+import { ageFrom, localDate } from "../time.ts";
+import { addTotals, energyEstimate, type MealItem, mealFeedback, type PlanTargets, planWarnings, sumItems, type Totals, validateItem, ZERO } from "./nutrition.ts";
 
 type Tool = Anthropic.Beta.Messages.BetaTool;
 
@@ -24,6 +25,7 @@ const DATE = { type: "string", description: "YYYY-MM-DD (לפי השעון המ�
 const NON_STRICT = new Set([
   "get_daily_summaries", "get_workouts", "get_workout_detail", "get_sleep", "get_trend", "get_samples", "get_events",
   "update_profile", "add_medication", "log_event",
+  "log_meal", "update_meal", "get_meals", "propose_nutrition_plan",
 ]);
 export const STRICT_LIMITS = { tools: 20, unionParams: 16, optionalParams: 24 };
 
@@ -349,6 +351,105 @@ const TOOL_DEFS: Tool[] = [
       additionalProperties: false,
     },
   },
+  {
+    name: "log_meal",
+    description:
+      "רישום ארוחה (מתמונה, הודעה קולית או תיאור). פרק את הארוחה לפריטים, והערך לכל פריט כמות, קלוריות ומאקרו. את הסכומים, ההשוואה לתוכנית ומה שנשאר להיום השרת מחשב ומחזיר. eaten_at בשעון המקומי YYYY-MM-DD HH:MM, או null לעכשיו. confidence בין 0 ל-1: כמה אתה בטוח בזיהוי ובכמויות. ארוחה אחת = קריאה אחת.",
+    strict: true,
+    input_schema: {
+      type: "object",
+      properties: {
+        meal_type: { type: ["string", "null"], enum: ["breakfast", "lunch", "dinner", "snack", "pre_workout", "post_workout", null] },
+        eaten_at: { type: ["string", "null"] },
+        items: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              name_he: { type: "string" },
+              quantity: { type: ["number", "null"] },
+              unit: { type: ["string", "null"], description: "גרם, מ\"ל, יחידה, כוס, כף..." },
+              kcal: { type: ["number", "null"] },
+              protein_g: { type: ["number", "null"] },
+              carbs_g: { type: ["number", "null"] },
+              fat_g: { type: ["number", "null"] },
+              fiber_g: { type: ["number", "null"] },
+              glycemic_load_est: { type: ["number", "null"], description: "עומס גליקמי משוער של הפריט במנה הזו" },
+            },
+            required: ["name_he", "quantity", "unit", "kcal", "protein_g", "carbs_g", "fat_g", "fiber_g", "glycemic_load_est"],
+            additionalProperties: false,
+          },
+        },
+        confidence: { type: "number" },
+        notes: { type: ["string", "null"] },
+      },
+      required: ["meal_type", "eaten_at", "items", "confidence", "notes"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "update_meal",
+    description:
+      "תיקון ארוחה שנרשמה (לפי meal_id מתוך <context> או get_meals). confirm: המשתמש אישר שהזיהוי נכון. replace_items: החלפת כל רשימת הפריטים בגרסה המתוקנת (שלח את כל הפריטים, לא רק את מה שהשתנה). delete: המשתמש אומר שלא אכל את זה או שזו כפילות. meal_type ו-eaten_at: null אם לא משתנים.",
+    strict: true,
+    input_schema: {
+      type: "object",
+      properties: {
+        meal_id: { type: "string" },
+        action: { type: "string", enum: ["confirm", "replace_items", "delete"] },
+        items: { type: ["array", "null"], items: { type: "object" }, description: "רק ל-replace_items, באותו מבנה של log_meal" },
+        meal_type: { type: ["string", "null"] },
+        eaten_at: { type: ["string", "null"] },
+      },
+      required: ["meal_id", "action", "items", "meal_type", "eaten_at"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "get_meals",
+    description:
+      "ארוחות וסיכום תזונה יומי (קלוריות, חלבון, פחמימות, שומן, סיבים) בטווח תאריכים, עד 92 יום, יחד עם יעדי התוכנית הפעילה. פירוט הארוחות והפריטים מוחזר רק לטווח של עד 14 יום. לטווח ארוך יותר מוחזר רק הסיכום היומי.",
+    strict: true,
+    input_schema: {
+      type: "object",
+      properties: { from: DATE, to: DATE },
+      required: ["from", "to"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "propose_nutrition_plan",
+    description:
+      "הצעת תוכנית תזונה, אחרי שבשיחה התבררו המטרה, ההעדפות והמגבלות. התוכנית לא נכנסת לתוקף: המשתמש מקבל כפתור אישור בטלגרם, ורק לחיצה עליו מפעילה אותה. השרת מחזיר הערכת הוצאה אנרגטית (TDEE) ואזהרות; אם יש אזהרה, תקן והצע שוב. אל תבקש מהמשתמש לכתוב 'מאשר/ת', הכפתור מגיע לבד.",
+    strict: true,
+    input_schema: {
+      type: "object",
+      properties: {
+        plan_types: {
+          type: "array",
+          items: { type: "string", enum: ["calorie_deficit", "high_protein", "glycemic_control", "maintenance", "muscle_gain", "anti_inflammatory", "custom"] },
+        },
+        kcal_target: { type: ["integer", "null"] },
+        protein_g: { type: ["integer", "null"] },
+        carbs_g: { type: ["integer", "null"] },
+        fat_g: { type: ["integer", "null"] },
+        fiber_g: { type: ["integer", "null"] },
+        rules: {
+          type: "object",
+          properties: {
+            carbs_per_meal_max_g: { type: ["integer", "null"] },
+            protein_per_meal_min_g: { type: ["integer", "null"] },
+            notes: { type: ["string", "null"], description: "כללים נוספים בעברית: תזמון ארוחות, הליכה אחרי ארוחה, מה להעדיף" },
+          },
+          required: ["carbs_per_meal_max_g", "protein_per_meal_min_g", "notes"],
+          additionalProperties: false,
+        },
+        rationale: { type: "string", description: "למה התוכנית הזו, בשניים-שלושה משפטים" },
+      },
+      required: ["plan_types", "kcal_target", "protein_g", "carbs_g", "fat_g", "fiber_g", "rules", "rationale"],
+      additionalProperties: false,
+    },
+  },
 ];
 
 export const TOOLS: Tool[] = TOOL_DEFS.map((t) => (NON_STRICT.has(t.name) ? { ...t, strict: false } : t));
@@ -362,6 +463,9 @@ export interface ToolContext {
   userId: string;
   timezone: string;
   messageId?: number;
+  mediaPath?: string | null;                        // תמונה שהגיעה עם ההודעה הנוכחית
+  inputKind?: "text" | "voice" | "photo";
+  effects?: { proposedPlanId?: string };            // תופעות לוואי שה-webhook צריך לדעת עליהן (כפתור אישור)
 }
 
 type Input = Record<string, unknown>;
@@ -748,9 +852,216 @@ export async function executeTool(name: string, input: Input, ctx: ToolContext):
       return summarizeEvents(events ?? [], days ?? [], timezone);
     }
 
+    case "log_meal": {
+      const items = parseItems(input.items);
+      const eatenAt = input.eaten_at ? localDateTime(String(input.eaten_at), timezone) : new Date().toISOString();
+      if (Date.parse(eatenAt) > Date.now() + 3600_000) throw new ToolInputError("eaten_at בעתיד");
+      const confidence = Math.min(1, Math.max(0, Number(input.confidence ?? 0.5)));
+      const totals = sumItems(items);
+      const plan = await loadActivePlan(db, userId);
+
+      const { data: meal, error } = await db.from("meals").insert({
+        user_id: userId, eaten_at: eatenAt, meal_type: mealType(input.meal_type),
+        input_kind: ctx.inputKind ?? "text", media_path: ctx.mediaPath ?? null, source_message_id: ctx.messageId ?? null,
+        status: "estimated", confidence, plan_id: plan?.id ?? null,
+        total_kcal: totals.kcal, protein_g: totals.protein_g, carbs_g: totals.carbs_g, fat_g: totals.fat_g, fiber_g: totals.fiber_g,
+      }).select("id").single();
+      if (error) throw error;
+      const { error: e2 } = await db.from("meal_items").insert(items.map((i) => ({ ...i, meal_id: meal.id, user_id: userId })));
+      if (e2) {
+        await db.from("meals").delete().eq("id", meal.id); // בלי פריטים אין ארוחה
+        throw e2;
+      }
+      const feedback = await feedbackFor(db, userId, timezone, eatenAt, totals, plan);
+      await db.from("meals").update({ plan_feedback: feedback }).eq("id", meal.id);
+      return { ok: true, meal_id: meal.id, meal_totals: totals, ...feedback };
+    }
+
+    case "update_meal": {
+      const id = String(input.meal_id ?? "");
+      const { data: meal, error } = await db.from("meals").select("id, eaten_at, plan_id").eq("user_id", userId).eq("id", id).maybeSingle();
+      if (error) throw error;
+      if (!meal) throw new ToolInputError("ארוחה לא נמצאה");
+
+      if (input.action === "delete") {
+        const { error: e } = await db.from("meals").delete().eq("user_id", userId).eq("id", id);
+        if (e) throw e;
+        return { ok: true, deleted: true };
+      }
+      const patch: Record<string, unknown> = {};
+      if (input.meal_type) patch.meal_type = mealType(input.meal_type);
+      if (input.eaten_at) patch.eaten_at = localDateTime(String(input.eaten_at), timezone);
+      if (input.action === "confirm") {
+        patch.status = "confirmed";
+        const { error: e } = await db.from("meals").update(patch).eq("user_id", userId).eq("id", id);
+        if (e) throw e;
+        return { ok: true, status: "confirmed" };
+      }
+      if (input.action !== "replace_items") throw new ToolInputError("action: confirm | replace_items | delete");
+      const items = parseItems(input.items);
+      const totals = sumItems(items);
+      const { error: e1 } = await db.from("meal_items").delete().eq("user_id", userId).eq("meal_id", id);
+      if (e1) throw e1;
+      const { error: e2 } = await db.from("meal_items").insert(items.map((i) => ({ ...i, meal_id: id, user_id: userId })));
+      if (e2) throw e2;
+      const plan = await loadActivePlan(db, userId);
+      const eatenAt = String(patch.eaten_at ?? meal.eaten_at);
+      Object.assign(patch, {
+        status: "corrected", total_kcal: totals.kcal, protein_g: totals.protein_g, carbs_g: totals.carbs_g,
+        fat_g: totals.fat_g, fiber_g: totals.fiber_g, plan_id: plan?.id ?? meal.plan_id,
+      });
+      const { error: e3 } = await db.from("meals").update(patch).eq("user_id", userId).eq("id", id);
+      if (e3) throw e3;
+      const feedback = await feedbackFor(db, userId, timezone, eatenAt, totals, plan);
+      await db.from("meals").update({ plan_feedback: feedback }).eq("id", id);
+      return { ok: true, meal_id: id, meal_totals: totals, ...feedback };
+    }
+
+    case "get_meals": {
+      const { from, to } = dateRange(input, 92);
+      const detailed = (Date.parse(to) - Date.parse(from)) / 86_400_000 < 14;
+      const [{ data: meals, error }, plan] = await Promise.all([
+        db.from("meals")
+          .select(`id, eaten_at, meal_type, status, total_kcal, protein_g, carbs_g, fat_g, fiber_g, plan_feedback${detailed ? ", meal_items(name_he, quantity, unit, kcal, protein_g, carbs_g)" : ""}`)
+          .eq("user_id", userId)
+          .gte("eaten_at", localDayBounds(from, timezone)).lt("eaten_at", localDayBounds(to, timezone, true))
+          .order("eaten_at").limit(500),
+        loadActivePlan(db, userId),
+      ]);
+      if (error) throw error;
+      const rows = (meals ?? []) as unknown as Array<Record<string, unknown>>;
+      const daily = new Map<string, Totals & { meals: number }>();
+      for (const m of rows) {
+        const day = localDate(String(m.eaten_at), timezone);
+        const t = daily.get(day) ?? { ...ZERO, meals: 0 };
+        daily.set(day, { ...addTotals(t, { kcal: num(m.total_kcal), protein_g: num(m.protein_g), carbs_g: num(m.carbs_g), fat_g: num(m.fat_g), fiber_g: num(m.fiber_g) }), meals: t.meals + 1 });
+      }
+      return {
+        plan: plan ? { plan_id: plan.id, ...planTargets(plan) } : null,
+        note: "יום בלי ארוחות רשומות = לא תועד, לא בהכרח לא אכל",
+        daily: [...daily.entries()].map(([day, t]) => ({ day, ...t, kcal: r0(t.kcal), protein_g: r0(t.protein_g), carbs_g: r0(t.carbs_g), fat_g: r0(t.fat_g), fiber_g: r0(t.fiber_g) })),
+        ...(detailed ? {
+          meals: rows.map((m) => ({
+            meal_id: m.id, at: new Date(String(m.eaten_at)).toLocaleString("he-IL", { timeZone: timezone, dateStyle: "short", timeStyle: "short" }),
+            type: m.meal_type, status: m.status, kcal: r0(m.total_kcal), protein_g: r0(m.protein_g), carbs_g: r0(m.carbs_g), fat_g: r0(m.fat_g),
+            items: m.meal_items, flags: (m.plan_feedback as { flags?: string[] } | null)?.flags ?? [],
+          })),
+        } : {}),
+      };
+    }
+
+    case "propose_nutrition_plan": {
+      const types = Array.isArray(input.plan_types) ? input.plan_types.map(String) : [];
+      const allowedTypes = ["calorie_deficit", "high_protein", "glycemic_control", "maintenance", "muscle_gain", "anti_inflammatory", "custom"];
+      if (!types.length || types.some((t) => !allowedTypes.includes(t))) throw new ToolInputError(`plan_types מתוך: ${allowedTypes.join(", ")}`);
+      const int = (v: unknown, lo: number, hi: number, name: string) => {
+        if (v === null || v === undefined) return null;
+        const n = Math.round(Number(v));
+        if (!Number.isFinite(n) || n < lo || n > hi) throw new ToolInputError(`${name} בין ${lo} ל-${hi}`);
+        return n;
+      };
+      const r = (input.rules ?? {}) as Input;
+      const plan: PlanTargets = {
+        plan_types: types,
+        kcal_target: int(input.kcal_target, 800, 6000, "kcal_target"),
+        protein_g: int(input.protein_g, 20, 400, "protein_g"),
+        carbs_g: int(input.carbs_g, 0, 800, "carbs_g"),
+        fat_g: int(input.fat_g, 10, 300, "fat_g"),
+        fiber_g: int(input.fiber_g, 0, 100, "fiber_g"),
+        rules: Object.fromEntries(Object.entries({
+          carbs_per_meal_max_g: int(r.carbs_per_meal_max_g, 10, 200, "carbs_per_meal_max_g"),
+          protein_per_meal_min_g: int(r.protein_per_meal_min_g, 5, 100, "protein_per_meal_min_g"),
+          notes: r.notes ? String(r.notes) : null,
+        }).filter(([, v]) => v !== null)),
+      };
+      const energy = await energyFor(db, userId);
+      const warnings = planWarnings(plan, energy.sex, energy.tdee, energy.weight_kg);
+      if (warnings.some((w) => w.startsWith("kcal_below_floor"))) {
+        throw new ToolInputError(`התוכנית מתחת לרצפת הקלוריות הבטוחה (${warnings.join(", ")}). צריך יעד גבוה יותר.`);
+      }
+      const { data, error } = await db.from("nutrition_plans").insert({
+        user_id: userId, ...plan, rationale: String(input.rationale ?? ""), status: "proposed", created_by: "agent",
+      }).select("id").single();
+      if (error) throw error;
+      if (ctx.effects) ctx.effects.proposedPlanId = data.id;
+      return {
+        ok: true, plan_id: data.id, status: "proposed",
+        energy_estimate: { bmr: energy.bmr, tdee: energy.tdee, missing_for_estimate: energy.missing, avg_active_kcal_14d: energy.active_kcal_used },
+        warnings,
+        next_step: "הצג למשתמש את עיקרי התוכנית במשפטים ספורים. כפתור האישור יישלח אוטומטית אחרי התשובה שלך.",
+      };
+    }
+
     default:
       throw new ToolInputError(`כלי לא מוכר: ${name}`);
   }
+}
+
+// ---------------------------------------------------------------------------
+// עזרים לתזונה
+// ---------------------------------------------------------------------------
+
+const MEAL_TYPES = ["breakfast", "lunch", "dinner", "snack", "pre_workout", "post_workout"];
+const mealType = (v: unknown) => (v && MEAL_TYPES.includes(String(v)) ? String(v) : null);
+const num = (v: unknown) => (v === null || v === undefined || Number.isNaN(Number(v)) ? 0 : Number(v));
+
+function parseItems(raw: unknown): MealItem[] {
+  if (!Array.isArray(raw) || !raw.length) throw new ToolInputError("items: צריך לפחות פריט אחד");
+  if (raw.length > 30) throw new ToolInputError("items: עד 30 פריטים לארוחה");
+  return raw.map((x) => {
+    const i = (x ?? {}) as Record<string, unknown>;
+    const n = (v: unknown) => (v === null || v === undefined || v === "" ? null : Number(v));
+    const item: MealItem = {
+      name_he: String(i.name_he ?? "").trim(), quantity: n(i.quantity), unit: i.unit ? String(i.unit) : null,
+      kcal: n(i.kcal), protein_g: n(i.protein_g), carbs_g: n(i.carbs_g), fat_g: n(i.fat_g), fiber_g: n(i.fiber_g),
+      glycemic_load_est: n(i.glycemic_load_est),
+    };
+    const err = validateItem(item);
+    if (err) throw new ToolInputError(err);
+    return item;
+  });
+}
+
+type PlanRow = { id: string } & PlanTargets;
+
+async function loadActivePlan(db: SupabaseClient, userId: string): Promise<PlanRow | null> {
+  const { data, error } = await db.from("nutrition_plans")
+    .select("id, plan_types, kcal_target, protein_g, carbs_g, fat_g, fiber_g, rules")
+    .eq("user_id", userId).eq("status", "active").maybeSingle();
+  if (error) throw error;
+  return data as PlanRow | null;
+}
+
+function planTargets(p: PlanTargets) {
+  return { plan_types: p.plan_types, kcal: p.kcal_target, protein_g: p.protein_g, carbs_g: p.carbs_g, fat_g: p.fat_g, fiber_g: p.fiber_g, rules: p.rules };
+}
+
+/** סכום כל הארוחות ביום המקומי של eatenAt (כולל הארוחה הנוכחית, שכבר נשמרה) */
+async function feedbackFor(db: SupabaseClient, userId: string, tz: string, eatenAt: string, meal: Totals, plan: PlanTargets | null) {
+  const day = localDate(eatenAt, tz);
+  const { data, error } = await db.from("meals").select("total_kcal, protein_g, carbs_g, fat_g, fiber_g")
+    .eq("user_id", userId).gte("eaten_at", localDayBounds(day, tz)).lt("eaten_at", localDayBounds(day, tz, true));
+  if (error) throw error;
+  const dayTotals = (data ?? []).reduce((t: Totals, m) => addTotals(t, { kcal: num(m.total_kcal), protein_g: num(m.protein_g), carbs_g: num(m.carbs_g), fat_g: num(m.fat_g), fiber_g: num(m.fiber_g) }), { ...ZERO });
+  return { day, meals_today: (data ?? []).length, ...mealFeedback(meal, dayTotals, plan) };
+}
+
+async function energyFor(db: SupabaseClient, userId: string) {
+  const since = new Date(Date.now() - 14 * 86_400_000).toISOString().slice(0, 10);
+  const [{ data: p }, { data: w }, { data: days }] = await Promise.all([
+    db.from("profiles").select("sex, birth_date, height_cm").eq("id", userId).single(),
+    db.from("health_samples").select("value").eq("user_id", userId).eq("metric", "body_mass")
+      .gte("start_at", new Date(Date.now() - 60 * 86_400_000).toISOString()).order("start_at", { ascending: false }).limit(1),
+    db.from("daily_summaries").select("active_kcal").eq("user_id", userId).gte("day", since).not("active_kcal", "is", null),
+  ]);
+  const today = new Date().toISOString().slice(0, 10);
+  const active = (days ?? []).map((d) => Number(d.active_kcal));
+  const weight = w?.[0] ? Number(w[0].value) : null;
+  const est = energyEstimate({
+    sex: p?.sex ?? null, age: ageFrom(p?.birth_date ?? null, today), height_cm: p?.height_cm ? Number(p.height_cm) : null,
+    weight_kg: weight, avg_active_kcal: active.length >= 5 ? active.reduce((a, b) => a + b, 0) / active.length : null,
+  });
+  return { ...est, sex: p?.sex ?? null, weight_kg: weight };
 }
 
 /** "YYYY-MM-DD HH:MM" בשעון המקומי → ISO ב-UTC */

@@ -37,18 +37,33 @@ export function splitMessage(text: string, max = 4000): string[] {
   return parts;
 }
 
+export type InlineKeyboard = Array<Array<{ text: string; callback_data: string }>>;
+
 /** שולח טקסט פשוט (בלי parse_mode, כדי שתווים כמו * או _ לא ישברו את ההודעה). מחזיר את ה-id של ההודעה האחרונה. */
-export async function sendMessage(chatId: number, text: string): Promise<number | null> {
+export async function sendMessage(chatId: number, text: string, keyboard?: InlineKeyboard): Promise<number | null> {
   let last: number | null = null;
-  for (const part of splitMessage(text)) {
+  const parts = splitMessage(text);
+  for (const [i, part] of parts.entries()) {
     const msg = await call<{ message_id: number }>("sendMessage", {
       chat_id: chatId,
       text: part,
       link_preview_options: { is_disabled: true },
+      // כפתורים רק על החלק האחרון של הודעה ארוכה
+      ...(keyboard && i === parts.length - 1 ? { reply_markup: { inline_keyboard: keyboard } } : {}),
     });
     last = msg.message_id;
   }
   return last;
+}
+
+/** סוגר את ה"שעון" שמופיע על כפתור אחרי לחיצה, ואפשר גם להציג הודעה קצרה */
+export async function answerCallback(callbackId: string, text?: string): Promise<void> {
+  await call("answerCallbackQuery", { callback_query_id: callbackId, ...(text ? { text } : {}) }).catch(() => {});
+}
+
+/** מסיר את הכפתורים מהודעה, כדי שלא ילחצו עליהם פעמיים */
+export async function clearKeyboard(chatId: number, messageId: number): Promise<void> {
+  await call("editMessageReplyMarkup", { chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: [] } }).catch(() => {});
 }
 
 export async function sendTyping(chatId: number): Promise<void> {
@@ -67,7 +82,7 @@ export async function setWebhook(url: string, secretToken: string): Promise<void
   await call("setWebhook", {
     url,
     secret_token: secretToken,
-    allowed_updates: ["message"],
+    allowed_updates: ["message", "callback_query"],
     drop_pending_updates: false,
   });
   await call("setMyCommands", {
@@ -95,8 +110,14 @@ export interface TgUpdate {
     text?: string;
     voice?: { file_id: string; duration: number; mime_type?: string };
     audio?: { file_id: string; duration: number; mime_type?: string };
-    photo?: Array<{ file_id: string; width: number; height: number }>;
-    document?: { file_id: string; mime_type?: string; file_name?: string };
+    photo?: Array<{ file_id: string; width: number; height: number; file_size?: number }>;
+    document?: { file_id: string; mime_type?: string; file_name?: string; file_size?: number };
     caption?: string;
+  };
+  callback_query?: {
+    id: string;
+    from: { id: number; username?: string };
+    message?: { message_id: number; chat: { id: number; type: string } };
+    data?: string;
   };
 }

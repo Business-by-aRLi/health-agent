@@ -37,3 +37,11 @@ export function localDate(iso: string, timeZone: string): string {
     day: "2-digit",
   }).format(new Date(iso));
 }
+
+/** גיל בשנים שלמות ביום נתון (YYYY-MM-DD) */
+export function ageFrom(birth: string | null, today: string): number | null {
+  if (!birth) return null;
+  const [by, bm, bd] = birth.split("-").map(Number);
+  const [ty, tm, td] = today.split("-").map(Number);
+  return ty - by - (tm < bm || (tm === bm && td < bd) ? 1 : 0);
+}

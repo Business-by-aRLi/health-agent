@@ -14,7 +14,8 @@ import Anthropic from "@anthropic-ai/sdk";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { serviceClient } from "../_shared/supabase.ts";
 import { json } from "../_shared/http.ts";
-import { downloadFile, sendMessage, sendTyping, setWebhook, type TgUpdate, webhookSecret } from "../_shared/telegram.ts";
+import { answerCallback, clearKeyboard, downloadFile, sendMessage, sendTyping, setWebhook, type TgUpdate, webhookSecret } from "../_shared/telegram.ts";
+import { localDate } from "../_shared/time.ts";
 import { transcribe } from "../_shared/transcribe.ts";
 import { buildContext, loadProfile } from "../_shared/agent/context.ts";
 import { DEFAULT_MODEL, runAgent } from "../_shared/agent/loop.ts";
@@ -38,6 +39,7 @@ const HELP = `אני המאמן האישי שלך 💪
 • איך היה אימון השחייה של הבוקר?
 • מה המגמה של הדופק במנוחה בחודשיים האחרונים?
 • מה כדאי לעשות היום?
+• 📸 תמונה של הארוחה (או תיאור במילים), ואני מעריך קלוריות וחלבון מול התוכנית שלך
 • היה לי התקף מיגרנה הבוקר, עוצמה 6 (אני רושם ביומן ומחפש דפוסים)
 
 /new: מתחילים שיחה חדשה (הזיכרון לטווח ארוך נשמר)`;
@@ -72,6 +74,7 @@ Deno.serve(async (req) => {
 });
 
 async function handleUpdate(db: SupabaseClient, update: TgUpdate): Promise<void> {
+  if (update.callback_query) return handleCallback(db, update.callback_query);
   const msg = update.message;
   if (!msg || msg.chat.type !== "private") return;
   const chatId = msg.chat.id;
@@ -120,10 +123,13 @@ async function handleUpdate(db: SupabaseClient, update: TgUpdate): Promise<void>
   }
 
   await sendTyping(chatId);
+  const profile = await loadProfile(db, userId);
 
-  // ---- מה המשתמש אמר: טקסט, הודעה קולית, או משהו שעוד לא נתמך
+  // ---- מה המשתמש אמר: טקסט, הודעה קולית, תמונה, או קובץ שעוד לא נתמך
   let userText = text;
   let inputKind: "text" | "voice" | "photo" = "text";
+  let image: { media_type: ImageType; data: string } | null = null;
+  let mediaPath: string | null = null;
   const voice = msg.voice ?? msg.audio;
   if (voice) {
     inputKind = "voice";
@@ -139,9 +145,29 @@ async function handleUpdate(db: SupabaseClient, update: TgUpdate): Promise<void>
       await sendMessage(chatId, "לא שמעתי כלום בהקלטה 🙂");
       return;
     }
-  } else if (msg.photo || msg.document) {
+  } else if (msg.photo || (msg.document && IMAGE_TYPES.includes(msg.document.mime_type as ImageType))) {
     inputKind = "photo";
-    userText = `[המשתמש שלח ${msg.photo ? "תמונה" : "קובץ"}${msg.caption ? ` עם הכיתוב: "${msg.caption}"` : " בלי כיתוב"}. ניתוח תמונות וקבצים (ארוחות, בדיקות דם) עוד לא זמין במערכת.]`;
+    // טלגרם שולח כמה גדלים של אותה תמונה, מהקטן לגדול. לוקחים את הגדול ביותר שעדיין מתחת למגבלה
+    const fileId = msg.photo
+      ? (msg.photo.filter((p) => (p.file_size ?? 0) <= MAX_IMAGE_BYTES).at(-1) ?? msg.photo[0]).file_id
+      : msg.document!.file_id;
+    try {
+      const file = await downloadFile(fileId);
+      if (file.bytes.length > MAX_IMAGE_BYTES) {
+        await sendMessage(chatId, "התמונה גדולה מדי. אפשר לשלוח אותה שוב כתמונה רגילה (לא כקובץ)?");
+        return;
+      }
+      const mediaType = msg.document?.mime_type as ImageType | undefined ?? guessImageType(file.path);
+      image = { media_type: mediaType, data: toBase64(file.bytes) };
+      mediaPath = await storeMedia(db, userId, profile.timezone, msg.message_id, file.bytes, mediaType);
+    } catch (e) {
+      console.error("photo download failed", e);
+      await sendMessage(chatId, "לא הצלחתי לפתוח את התמונה. אפשר לנסות לשלוח שוב?");
+      return;
+    }
+    userText = msg.caption ? msg.caption : "(נשלחה תמונה בלי כיתוב)";
+  } else if (msg.document) {
+    userText = `[המשתמש שלח קובץ${msg.document.file_name ? ` בשם "${msg.document.file_name}"` : ""}${msg.caption ? ` עם הכיתוב: "${msg.caption}"` : ""}. קריאת קבצים (למשל בדיקות דם ב-PDF) עוד לא זמינה במערכת; תמונה של ארוחה כן נתמכת.]`;
   }
   if (!userText) return;
 
@@ -149,25 +175,35 @@ async function handleUpdate(db: SupabaseClient, update: TgUpdate): Promise<void>
   const history = await loadHistory(db, userId);
 
   const { data: saved } = await db.from("messages").insert({
-    user_id: userId, role: "user", content: userText, input_kind: inputKind, telegram_message_id: msg.message_id,
+    user_id: userId, role: "user", content: inputKind === "photo" ? `[תמונה] ${userText}` : userText,
+    input_kind: inputKind, telegram_message_id: msg.message_id, media_path: mediaPath,
   }).select("id").single();
 
-  const profile = await loadProfile(db, userId);
   const context = await buildContext(db, profile);
   const typing = setInterval(() => sendTyping(chatId), 4500); // "מקליד..." נעלם אחרי 5 שניות
+
+  const effects: { proposedPlanId?: string } = {};
 
   try {
     const result = await runAgent({
       client: anthropic,
       history,
       userText: inputKind === "voice" ? `(הודעה קולית, תומללה אוטומטית)\n${userText}` : userText,
+      images: image ? [image] : undefined,
       context,
       model: Deno.env.get("COACH_MODEL") ?? DEFAULT_MODEL,
-      runTool: (name, input) => executeTool(name, input, { db, userId, timezone: profile.timezone, messageId: saved?.id }),
+      runTool: (name, input) => executeTool(name, input, {
+        db, userId, timezone: profile.timezone, messageId: saved?.id, mediaPath, inputKind, effects,
+      }),
     });
 
     const reply = inputKind === "voice" ? `🎙️ "${userText}"\n\n${result.text}` : result.text;
-    const tgId = await sendMessage(chatId, reply);
+    // הצעת תוכנית תזונה: הכפתור הוא הדרך היחידה להפעיל אותה, והמודל לא יכול ללחוץ עליו
+    const keyboard = effects.proposedPlanId
+      ? [[{ text: "✅ לאשר את התוכנית", callback_data: `plan:approve:${effects.proposedPlanId}` },
+          { text: "לא עכשיו", callback_data: `plan:reject:${effects.proposedPlanId}` }]]
+      : undefined;
+    const tgId = await sendMessage(chatId, reply, keyboard);
     await db.from("messages").insert({
       user_id: userId, role: "assistant", content: result.text, telegram_message_id: tgId,
       meta: { model: result.model, usage: result.usage, tools: result.toolCalls, iterations: result.iterations, stop: result.stopReason },
@@ -193,4 +229,67 @@ async function loadHistory(db: SupabaseClient, userId: string) {
     .eq("user_id", userId).gte("created_at", since)
     .order("id", { ascending: false }).limit(HISTORY_MESSAGES + 1);
   return prepareHistory(data ?? []);
+}
+
+// ---------------------------------------------------------------------------
+// כפתורים (callback_query): כרגע אישור או דחייה של תוכנית תזונה
+// ---------------------------------------------------------------------------
+async function handleCallback(db: SupabaseClient, cb: NonNullable<TgUpdate["callback_query"]>): Promise<void> {
+  const chatId = cb.message?.chat.id;
+  // רק בצ'אט פרטי, ורק מי שהצ'אט שלו (בצ'אט פרטי ה-chat id שווה ל-user id של טלגרם)
+  if (!chatId || cb.message?.chat.type !== "private" || cb.from.id !== chatId) return answerCallback(cb.id);
+  const { data: link } = await db.from("telegram_links").select("user_id").eq("chat_id", chatId).maybeSingle();
+  if (!link) return answerCallback(cb.id, "הצ'אט לא מחובר");
+  const userId = link.user_id as string;
+
+  const m = (cb.data ?? "").match(/^plan:(approve|reject):([0-9a-f-]{36})$/);
+  if (!m) return answerCallback(cb.id);
+  const [, action, planId] = m;
+
+  const { error } = await db.rpc(action === "approve" ? "activate_nutrition_plan" : "reject_nutrition_plan", { p_user_id: userId, p_plan_id: planId });
+  if (error) {
+    console.error("plan callback failed", error);
+    await answerCallback(cb.id, /floor/.test(error.message) ? "התוכנית מתחת לרצפת הקלוריות הבטוחה" : "לא הצלחתי לעדכן את התוכנית");
+    return;
+  }
+  await answerCallback(cb.id);
+  await clearKeyboard(chatId, cb.message!.message_id);
+  const text = action === "approve"
+    ? "התוכנית הופעלה ✅ מעכשיו כל ארוחה תיבדק מולה."
+    : "בסדר, התוכנית לא הופעלה. אפשר להמשיך לדבר עליה ולשנות.";
+  const tgId = await sendMessage(chatId, text);
+  // נרשם בהיסטוריה, כדי שהסוכן יידע בהודעה הבאה מה קרה
+  await db.from("messages").insert([
+    { user_id: userId, role: "user", content: action === "approve" ? "[לחצתי על אישור התוכנית]" : "[לחצתי על 'לא עכשיו' לתוכנית]", input_kind: "text" },
+    { user_id: userId, role: "assistant", content: text, telegram_message_id: tgId },
+  ]);
+}
+
+// ---------------------------------------------------------------------------
+// תמונות
+// ---------------------------------------------------------------------------
+type ImageType = "image/jpeg" | "image/png" | "image/webp" | "image/gif";
+const IMAGE_TYPES: ImageType[] = ["image/jpeg", "image/png", "image/webp", "image/gif"];
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // מגבלת ה-API לתמונה ב-base64
+
+function guessImageType(path: string): ImageType {
+  const ext = path.split(".").pop()?.toLowerCase();
+  return ext === "png" ? "image/png" : ext === "webp" ? "image/webp" : ext === "gif" ? "image/gif" : "image/jpeg";
+}
+
+function toBase64(bytes: Uint8Array): string {
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+
+/** שומר את התמונה ב-Storage הפרטי: {user_id}/{יום מקומי}/{message_id}.{ext}. כישלון לא עוצר את השיחה */
+async function storeMedia(db: SupabaseClient, userId: string, tz: string, messageId: number, bytes: Uint8Array, type: ImageType): Promise<string | null> {
+  const path = `${userId}/${localDate(new Date().toISOString(), tz)}/${messageId}.${type.split("/")[1].replace("jpeg", "jpg")}`;
+  const { error } = await db.storage.from("user-media").upload(path, bytes, { contentType: type, upsert: true });
+  if (error) {
+    console.error("storage upload failed", error);
+    return null;
+  }
+  return path;
 }

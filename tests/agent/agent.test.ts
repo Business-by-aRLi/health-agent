@@ -255,3 +255,57 @@ Deno.test("יומן בריאות: זמן מקומי ל-UTC, ותמונת מצב 
   assertEquals(res.events[0].snapshot.hrv, 31.3);
   assertEquals(res.events[0].snapshot.prev_day, { steps: 12000, active_kcal: null, workouts: 2, workout_min: 95 });
 });
+
+Deno.test("תזונה: סכום פריטים, משוב מול תוכנית, ובדיקות תקינות", async () => {
+  const { sumItems, mealFeedback, validateItem, ZERO, addTotals } = await import("../../supabase/functions/_shared/agent/nutrition.ts");
+  const items = [
+    { name_he: "אורז לבן", quantity: 200, unit: "גרם", kcal: 260, protein_g: 5, carbs_g: 57, fat_g: 0.5, fiber_g: 1, glycemic_load_est: 30 },
+    { name_he: "חזה עוף", quantity: 150, unit: "גרם", kcal: 248, protein_g: 46.5, carbs_g: 0, fat_g: 5.4, fiber_g: 0, glycemic_load_est: 0 },
+    { name_he: "סלט", quantity: null, unit: null, kcal: 40, protein_g: null, carbs_g: 6, fat_g: null, fiber_g: 3, glycemic_load_est: 1 },
+  ];
+  const meal = sumItems(items);
+  assertEquals(meal, { kcal: 548, protein_g: 52, carbs_g: 63, fat_g: 6, fiber_g: 4, glycemic_load: 31 });
+
+  const plan = {
+    plan_types: ["calorie_deficit", "glycemic_control"], kcal_target: 1700, protein_g: 120, carbs_g: 150, fat_g: null, fiber_g: 30,
+    rules: { carbs_per_meal_max_g: 45, protein_per_meal_min_g: 25 },
+  };
+  const day = addTotals(addTotals({ ...ZERO }, { kcal: 900, protein_g: 40, carbs_g: 80, fiber_g: 10 }), meal);
+  const fb = mealFeedback(meal, day, plan);
+  assertEquals(fb.remaining, { kcal: 252, protein_g: 28, carbs_g: 7, fiber_g: 16 });
+  assertEquals(fb.flags, ["carbs_per_meal_over:63>45", "high_glycemic_load:31"]);
+  assertEquals(mealFeedback(meal, day, null).flags, []);
+
+  assertEquals(validateItem(items[0]), null);
+  assert(validateItem({ ...items[0], kcal: 9000 }));
+  assert(validateItem({ ...items[0], protein_g: -3 }));
+  assert(validateItem({ ...items[0], name_he: "" }));
+});
+
+Deno.test("תזונה: הערכת הוצאה אנרגטית ואזהרות על הצעת תוכנית", async () => {
+  const { energyEstimate, planWarnings } = await import("../../supabase/functions/_shared/agent/nutrition.ts");
+  // Mifflin-St Jeor: אישה, 40, 165 ס"מ, 65 ק"ג → 10*65 + 6.25*165 - 5*40 - 161 = 1320
+  const e = energyEstimate({ sex: "female", age: 40, height_cm: 165, weight_kg: 65, avg_active_kcal: 450 });
+  assertEquals(e.bmr, 1320);
+  assertEquals(e.tdee, 2034); // 1320*1.2 + 450
+  assertEquals(energyEstimate({ sex: null, age: 40, height_cm: null, weight_kg: 65, avg_active_kcal: null }).missing, ["sex", "height_cm"]);
+
+  const base = { plan_types: ["calorie_deficit"], kcal_target: 1700, protein_g: 120, carbs_g: 170, fat_g: 60, fiber_g: 30, rules: {} };
+  assertEquals(planWarnings(base, "female", 2034, 65), []);
+  assertEquals(planWarnings({ ...base, kcal_target: 1100 }, "female", 2034, 65).filter((w) => w.startsWith("kcal_below_floor")), ["kcal_below_floor:1200"]);
+  assert(planWarnings({ ...base, kcal_target: 1400 }, "male", 2600, 80).some((w) => w.startsWith("kcal_below_floor:1500")));
+  assert(planWarnings({ ...base, kcal_target: 1400 }, "female", 2034, 65).some((w) => w.startsWith("deficit_over_25pct")));
+  assert(planWarnings({ ...base, protein_g: 200 }, "female", 2034, 65).some((w) => w.startsWith("protein_over")));
+});
+
+Deno.test("loop: תמונה נשלחת כבלוק image לפני הטקסט", async () => {
+  const { client, requests } = fakeClient([{ stop_reason: "end_turn", content: [text("נראה כמו שקשוקה")] as Msg["content"] }]);
+  await runAgent({
+    client, history: [], userText: "ארוחת בוקר", context: "<context/>",
+    images: [{ media_type: "image/jpeg", data: "AAAA" }],
+    runTool: () => Promise.resolve({}),
+  });
+  const content = (requests[0].messages as Array<{ content: Array<Record<string, unknown>> }>)[0].content;
+  assertEquals(content[0], { type: "image", source: { type: "base64", media_type: "image/jpeg", data: "AAAA" } });
+  assertEquals(content[1], { type: "text", text: "<context/>\n\nארוחת בוקר" });
+});

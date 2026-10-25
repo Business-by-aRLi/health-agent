@@ -29,6 +29,7 @@ export interface AgentInput {
   userText: string;
   context: string;
   runTool: (name: string, input: Record<string, unknown>) => Promise<unknown>;
+  images?: Array<{ media_type: "image/jpeg" | "image/png" | "image/webp" | "image/gif"; data: string }>; // base64
   model?: string;
   effort?: "low" | "medium" | "high";
 }
@@ -46,7 +47,16 @@ export async function runAgent(a: AgentInput): Promise<AgentResult> {
   const model = a.model ?? DEFAULT_MODEL;
   const messages: MessageParam[] = [
     ...a.history.map((h) => ({ role: h.role, content: h.content })),
-    { role: "user", content: `${a.context}\n\n${a.userText}` },
+    {
+      role: "user",
+      // תמונה (ארוחה) נכנסת לפני הטקסט, כמו שמומלץ לעבודה עם vision
+      content: a.images?.length
+        ? [
+          ...a.images.map((img) => ({ type: "image" as const, source: { type: "base64" as const, media_type: img.media_type, data: img.data } })),
+          { type: "text" as const, text: `${a.context}\n\n${a.userText}` },
+        ]
+        : `${a.context}\n\n${a.userText}`,
+    },
   ];
   const toolCalls: AgentResult["toolCalls"] = [];
   const usage = { input: 0, output: 0, cache_read: 0, cache_write: 0 };
