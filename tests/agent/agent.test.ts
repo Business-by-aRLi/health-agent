@@ -192,7 +192,7 @@ Deno.test("executeTool: כלי לא מוכר נדחה", async () => {
 Deno.test("intake: סדר עדיפויות, 'none' ו-declined מכובדים, cooldown בין שאלות", async () => {
   const { planIntake, INTAKE_KEYS, ASK_COOLDOWN_HOURS } = await import("../../supabase/functions/_shared/agent/intake.ts");
   const facts = {
-    sex: "female", birth_date: null, height_cm: null, training_background: null, activity_level: null,
+    name_confirmed: true, sex: "female", birth_date: null, height_cm: null, training_background: null, activity_level: null,
     injuries_notes: null, dietary_prefs: {}, cycle_tracking_enabled: false,
     has_recent_weight: true, active_goals: 0, medications: 0, conditions: 0,
   };
@@ -363,4 +363,66 @@ Deno.test("תזכורות: תדריך לפני אימון (כולל הזזה מ�
   assertEquals(planReminders({ ...base, sessions: [noStart], now: at("12:00") }).due, []);
   // workouts כבוי
   assertEquals(planReminders({ ...base, prefs: { ...DEFAULT_PREFS, workouts: false }, now: at("09:20") }).due, []);
+});
+
+Deno.test("היכרות ראשונית: שאלה אחרי שאלה בלי cooldown, שם 'answered', declined מדולג", async () => {
+  const { planIntake, intakeContextLines } = await import("../../supabase/functions/_shared/agent/intake.ts");
+  const facts = {
+    name_confirmed: false, sex: null, birth_date: null, height_cm: null, training_background: null, activity_level: null,
+    injuries_notes: null, dietary_prefs: {}, cycle_tracking_enabled: false,
+    has_recent_weight: false, active_goals: 0, medications: 0, conditions: 0,
+  };
+  const now = new Date("2026-10-24T12:00:00Z");
+  const justAsked = (field: string, status: "asked" | "declined" | "answered" = "asked") =>
+    ({ field, status, ask_count: 1, last_asked_at: new Date(now.getTime() - 60_000).toISOString() });
+
+  // מחוץ להיכרות: שאלה לפני דקה חוסמת. בתוכה: ממשיכים מיד
+  assertEquals(planIntake(facts, [justAsked("name")], now).suggest, null);
+  assertEquals(planIntake(facts, [], now, "in_progress").suggest?.key, "name");
+  const named = planIntake(facts, [justAsked("name", "answered")], now, "in_progress");
+  assert(!named.missing.some((f) => f.key === "name"));
+  assertEquals(named.suggest?.key, "sex");
+  assertEquals(planIntake(facts, [justAsked("name", "answered"), justAsked("sex", "declined")], now, "in_progress").suggest?.key, "goals");
+  assert(intakeContextLines(named).some((l) => l.includes("היכרות ראשונית פעילה") && l.includes("field=sex")));
+
+  // הכול ידוע: שלב ההגדרות
+  const full = {
+    ...facts, name_confirmed: true, sex: "male", birth_date: "1990-01-01", height_cm: 180, training_background: "x",
+    activity_level: "moderate", injuries_notes: "אין", dietary_prefs: { notes: "x" }, has_recent_weight: true, active_goals: 1, medications: 1, conditions: 1,
+  };
+  const done = planIntake(full, [], now, "in_progress");
+  assertEquals(done.suggest, null);
+  assert(intakeContextLines(done).some((l) => l.includes("onboarding_update עם done")));
+});
+
+Deno.test("היכרות ראשונית: מתי מציעים ביוזמה", async () => {
+  const { planOnboarding } = await import("../../supabase/functions/_shared/agent/onboarding.ts");
+  const { DEFAULT_PREFS } = await import("../../supabase/functions/_shared/agent/reminders.ts");
+  const at = (hhmm: string, day = "03") => new Date(`2026-11-${day}T${hhmm}:00+02:00`);
+  const base = {
+    now: at("12:00"), timezone: "Asia/Jerusalem", prefs: DEFAULT_PREFS, status: null, statusUpdatedAt: null,
+    missingCount: 8, lastUserMessageAt: null, sent: new Set<string>(),
+  };
+
+  assertEquals(planOnboarding(base)?.ref, "offer");
+  assertEquals(planOnboarding(base)?.keyboard[0][0].callback_data, "onb:start");
+  assertEquals(planOnboarding({ ...base, now: at("23:00") }), null, "שעות שקט");
+  assertEquals(planOnboarding({ ...base, lastUserMessageAt: at("11:55").toISOString() }), null, "באמצע שיחה");
+  assertEquals(planOnboarding({ ...base, missingCount: 2 }), null, "כמעט מוכר");
+  assertEquals(planOnboarding({ ...base, sent: new Set(["offer"]) }), null, "פעם אחת בלבד");
+
+  const offered = { ...base, status: "offered" as const, statusUpdatedAt: at("12:00", "02").toISOString(), sent: new Set(["offer"]) };
+  assertEquals(planOnboarding(offered)?.ref, "offer_nudge");
+  assertEquals(planOnboarding({ ...offered, statusUpdatedAt: at("20:00", "02").toISOString() }), null, "עוד לא עברו 24 שעות");
+  assertEquals(planOnboarding({ ...offered, sent: new Set(["offer", "offer_nudge"]) }), null);
+
+  const snoozed = { ...base, status: "snoozed" as const, statusUpdatedAt: at("14:00", "02").toISOString() };
+  assertEquals(planOnboarding(snoozed)?.ref, "snooze_nudge");
+
+  const stalled = { ...base, status: "in_progress" as const, statusUpdatedAt: at("10:00", "02").toISOString(), lastUserMessageAt: at("10:05", "02").toISOString() };
+  assertEquals(planOnboarding(stalled)?.ref, "resume");
+  assertEquals(planOnboarding(stalled)?.keyboard[0][0].text, "נמשיך 👍");
+  assertEquals(planOnboarding({ ...stalled, missingCount: 0 }), null);
+  assertEquals(planOnboarding({ ...base, status: "declined" }), null);
+  assertEquals(planOnboarding({ ...base, status: "done" }), null);
 });

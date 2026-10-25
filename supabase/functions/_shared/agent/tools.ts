@@ -146,7 +146,7 @@ const TOOL_DEFS: Tool[] = [
     input_schema: {
       type: "object",
       properties: {
-        display_name: { type: ["string", "null"] },
+        display_name: { type: ["string", "null"], description: "השם שהמשתמש ביקש שנפנה אליו" },
         birth_date: { type: ["string", "null"], description: "YYYY-MM-DD" },
         sex: { type: ["string", "null"], description: "female | male | other" },
         height_cm: { type: ["number", "null"] },
@@ -512,6 +512,18 @@ const TOOL_DEFS: Tool[] = [
       additionalProperties: false,
     },
   },
+  {
+    name: "onboarding_update",
+    description:
+      "עדכון מצב ההיכרות הראשונית. in_progress: המשתמש הסכים להכיר (גם אם כתב את זה במילים ולא לחץ על הכפתור). snoozed: \"אחר כך\" (תזכורת אחת למחרת). declined: לא מעוניין בהיכרות מסודרת (הפרטים ייאספו בהדרגה כרגיל). done: סיימתם את השאלות ואת ההגדרות הראשוניות.",
+    strict: true,
+    input_schema: {
+      type: "object",
+      properties: { status: { type: "string", enum: ["in_progress", "snoozed", "declined", "done"] } },
+      required: ["status"],
+      additionalProperties: false,
+    },
+  },
 ];
 
 export const TOOLS: Tool[] = TOOL_DEFS.map((t) => (NON_STRICT.has(t.name) ? { ...t, strict: false } : t));
@@ -752,6 +764,8 @@ export async function executeTool(name: string, input: Input, ctx: ToolContext):
       if (patch.sex && patch.sex !== "female") patch.cycle_tracking_enabled = false;
       const { error } = await db.from("profiles").update(patch).eq("id", userId);
       if (error) throw error;
+      // לשם אין עמודה "ריקה" שאפשר לבדוק (ברירת המחדל היא תחילית המייל), ולכן מסמנים שנענה
+      if (patch.display_name) await db.rpc("mark_intake", { p_user_id: userId, p_field: "name", p_status: "answered" });
       return { ok: true, changed: Object.keys(patch) };
     }
 
@@ -1122,6 +1136,14 @@ export async function executeTool(name: string, input: Input, ctx: ToolContext):
       const { error: e2 } = await db.from("profiles").update({ notification_prefs: { ...prefs, reminders: r } }).eq("id", userId);
       if (e2) throw e2;
       return { ok: true, reminders: mergePrefs(r) };
+    }
+
+    case "onboarding_update": {
+      const status = String(input.status);
+      if (!["in_progress", "snoozed", "declined", "done"].includes(status)) throw new ToolInputError("status לא תקין");
+      const { error } = await db.from("profiles").update({ onboarding_status: status, onboarding_updated_at: new Date().toISOString() }).eq("id", userId);
+      if (error) throw error;
+      return { ok: true, status };
     }
 
     default:

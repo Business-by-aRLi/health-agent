@@ -19,6 +19,8 @@ import { buildContext, loadProfile } from "../_shared/agent/context.ts";
 import { DEFAULT_MODEL, runAgent } from "../_shared/agent/loop.ts";
 import { executeTool, localDayBounds } from "../_shared/agent/tools.ts";
 import { prepareHistory } from "../_shared/agent/history.ts";
+import { loadIntake } from "../_shared/agent/intake.ts";
+import { planOnboarding } from "../_shared/agent/onboarding.ts";
 import { type DueReminder, mergePrefs, type PlannedSession, planReminders } from "../_shared/agent/reminders.ts";
 
 declare const EdgeRuntime: { waitUntil(p: Promise<unknown>): void };
@@ -50,7 +52,7 @@ async function runAll(db: SupabaseClient, now: Date) {
 }
 
 async function runUser(db: SupabaseClient, userId: string, chatId: number, now: Date) {
-  const { data: p, error } = await db.from("profiles").select("timezone, notification_prefs").eq("id", userId).single();
+  const { data: p, error } = await db.from("profiles").select("timezone, notification_prefs, onboarding_status, onboarding_updated_at").eq("id", userId).single();
   if (error) throw error;
   const tz = p.timezone as string;
   const np = (p.notification_prefs ?? {}) as Record<string, unknown>;
@@ -89,6 +91,41 @@ async function runUser(db: SupabaseClient, userId: string, chatId: number, now: 
       .eq("user_id", userId).eq("id", d.session_id).eq("status", "planned");
   }
   for (const r of due) await deliver(db, userId, chatId, r, now);
+  await maybeOnboard(db, userId, chatId, now, {
+    timezone: tz, prefs, lastUserMessageAt: (lastMsg.data?.created_at as string | undefined) ?? null,
+    status: (p.onboarding_status ?? null) as string | null, updatedAt: (p.onboarding_updated_at ?? null) as string | null,
+  });
+}
+
+// הצעת היכרות ביוזמה: טקסט קבוע עם כפתורים (לא המודל), לכל היותר פעם אחת לכל סוג פנייה
+async function maybeOnboard(
+  db: SupabaseClient, userId: string, chatId: number, now: Date,
+  a: { timezone: string; prefs: ReturnType<typeof mergePrefs>; lastUserMessageAt: string | null; status: string | null; updatedAt: string | null },
+) {
+  if (a.status === "done" || a.status === "declined") return;
+  const [intake, sent] = await Promise.all([
+    loadIntake(db, userId, now),
+    db.from("outbound_notifications").select("ref_key").eq("user_id", userId).eq("kind", "onboarding"),
+  ]);
+  const o = planOnboarding({
+    now, timezone: a.timezone, prefs: a.prefs, status: intake.onboarding, statusUpdatedAt: a.updatedAt,
+    missingCount: intake.missing.length, lastUserMessageAt: a.lastUserMessageAt,
+    sent: new Set((sent.data ?? []).map((r) => r.ref_key as string)),
+  });
+  if (!o) return;
+  const { data: claimed } = await db.from("outbound_notifications")
+    .upsert({ user_id: userId, kind: "onboarding", ref_key: o.ref }, { onConflict: "user_id,kind,ref_key", ignoreDuplicates: true })
+    .select("ref_key");
+  if (!claimed?.length) return;
+  const tgId = await sendMessage(chatId, o.text, o.keyboard);
+  await Promise.all([
+    db.from("outbound_notifications").update({ telegram_message_id: tgId }).eq("user_id", userId).eq("kind", "onboarding").eq("ref_key", o.ref),
+    db.from("messages").insert({ user_id: userId, role: "assistant", content: o.text, telegram_message_id: tgId, meta: { proactive: "onboarding", ref_key: o.ref } }),
+    // ה"שעון" של התזכורת הבאה מתחיל מההצעה הראשונה; nudge-ים לא מאפסים אותו
+    a.status === null
+      ? db.from("profiles").update({ onboarding_status: "offered", onboarding_updated_at: now.toISOString() }).eq("id", userId)
+      : Promise.resolve(),
+  ]);
 }
 
 async function deliver(db: SupabaseClient, userId: string, chatId: number, r: DueReminder, now: Date) {

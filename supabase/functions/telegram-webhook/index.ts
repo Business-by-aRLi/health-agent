@@ -22,6 +22,7 @@ import { buildContext, loadProfile } from "../_shared/agent/context.ts";
 import { DEFAULT_MODEL, runAgent } from "../_shared/agent/loop.ts";
 import { executeTool } from "../_shared/agent/tools.ts";
 import { prepareHistory } from "../_shared/agent/history.ts";
+import { OFFER_TEXT, onboardingKeyboard } from "../_shared/agent/onboarding.ts";
 
 declare const EdgeRuntime: { waitUntil(p: Promise<unknown>): void };
 
@@ -88,9 +89,21 @@ async function handleUpdate(db: SupabaseClient, update: TgUpdate): Promise<void>
     const { data: userId } = await db.rpc("redeem_telegram_link_code", {
       p_code: code, p_chat_id: chatId, p_username: msg.from?.username ?? null,
     });
-    await sendMessage(chatId, userId
-      ? `מחובר ✅\n\n${HELP}\n\nכדי שההמלצות יתאימו בדיוק לך, אשאל מדי פעם שאלה קטנה עליך (יעדים, רקע, תרופות). הכול לא חובה, ואפשר תמיד לדלג.`
-      : "הקוד לא תקף או שפג תוקפו (15 דקות). אפשר להנפיק קוד חדש.");
+    if (!userId) {
+      await sendMessage(chatId, "הקוד לא תקף או שפג תוקפו (15 דקות). אפשר להנפיק קוד חדש.");
+      return;
+    }
+    await sendMessage(chatId, `מחובר ✅\n\n${HELP}`);
+    // משתמש חדש: מציעים מיד היכרות קצרה. מי שכבר עבר אותה (חיבור מחדש מטלפון אחר) לא מקבל שוב
+    const { data: p } = await db.from("profiles").select("onboarding_status").eq("id", userId).single();
+    if (!p?.onboarding_status || p.onboarding_status === "snoozed" || p.onboarding_status === "offered") {
+      const tgId = await sendMessage(chatId, OFFER_TEXT, onboardingKeyboard("offer"));
+      await Promise.all([
+        db.from("profiles").update({ onboarding_status: "offered", onboarding_updated_at: new Date().toISOString() }).eq("id", userId),
+        db.from("outbound_notifications").upsert({ user_id: userId, kind: "onboarding", ref_key: "offer", telegram_message_id: tgId }, { onConflict: "user_id,kind,ref_key", ignoreDuplicates: true }),
+        db.from("messages").insert({ user_id: userId, role: "assistant", content: OFFER_TEXT, telegram_message_id: tgId, meta: { proactive: "onboarding" } }),
+      ]);
+    }
     return;
   }
 
@@ -177,31 +190,50 @@ async function handleUpdate(db: SupabaseClient, update: TgUpdate): Promise<void>
     input_kind: inputKind, telegram_message_id: msg.message_id, media_path: mediaPath,
   }).select("id").single();
 
+  await agentTurn(db, {
+    userId, chatId, profile, history,
+    userText: inputKind === "voice" ? `(הודעה קולית, תומללה אוטומטית)\n${userText}` : userText,
+    echo: inputKind === "voice" ? `🎙️ "${userText}"\n\n` : "",
+    images: image ? [image] : undefined,
+    savedId: saved?.id, mediaPath, inputKind,
+  });
+}
+
+type Profile = Awaited<ReturnType<typeof loadProfile>>;
+
+/**
+ * תור אחד של הסוכן: הקשר → מודל + כלים → תשובה בטלגרם → שמירה בהיסטוריה.
+ * משותף להודעה רגילה ולכפתור "בואו נכיר", שבו userText הוא הוראה יזומה של המערכת.
+ */
+async function agentTurn(db: SupabaseClient, a: {
+  userId: string; chatId: number; profile: Profile; history: Awaited<ReturnType<typeof loadHistory>>;
+  userText: string; echo?: string; images?: Array<{ media_type: ImageType; data: string }>;
+  savedId?: number; mediaPath?: string | null; inputKind?: "text" | "voice" | "photo";
+}): Promise<void> {
+  const { userId, chatId, profile } = a;
   const context = await buildContext(db, profile);
   const typing = setInterval(() => sendTyping(chatId), 4500); // "מקליד..." נעלם אחרי 5 שניות
-
   const effects: { proposedPlanId?: string } = {};
 
   try {
     const result = await runAgent({
       client: anthropic,
-      history,
-      userText: inputKind === "voice" ? `(הודעה קולית, תומללה אוטומטית)\n${userText}` : userText,
-      images: image ? [image] : undefined,
+      history: a.history,
+      userText: a.userText,
+      images: a.images,
       context,
       model: Deno.env.get("COACH_MODEL") ?? DEFAULT_MODEL,
       runTool: (name, input) => executeTool(name, input, {
-        db, userId, timezone: profile.timezone, messageId: saved?.id, mediaPath, inputKind, effects,
+        db, userId, timezone: profile.timezone, messageId: a.savedId, mediaPath: a.mediaPath ?? null, inputKind: a.inputKind ?? "text", effects,
       }),
     });
 
-    const reply = inputKind === "voice" ? `🎙️ "${userText}"\n\n${result.text}` : result.text;
     // הצעת תוכנית תזונה: הכפתור הוא הדרך היחידה להפעיל אותה, והמודל לא יכול ללחוץ עליו
     const keyboard = effects.proposedPlanId
       ? [[{ text: "✅ לאשר את התוכנית", callback_data: `plan:approve:${effects.proposedPlanId}` },
           { text: "לא עכשיו", callback_data: `plan:reject:${effects.proposedPlanId}` }]]
       : undefined;
-    const tgId = await sendMessage(chatId, reply, keyboard);
+    const tgId = await sendMessage(chatId, `${a.echo ?? ""}${result.text}`, keyboard);
     await db.from("messages").insert({
       user_id: userId, role: "assistant", content: result.text, telegram_message_id: tgId,
       meta: { model: result.model, usage: result.usage, tools: result.toolCalls, iterations: result.iterations, stop: result.stopReason },
@@ -240,6 +272,8 @@ async function handleCallback(db: SupabaseClient, cb: NonNullable<TgUpdate["call
   if (!link) return answerCallback(cb.id, "הצ'אט לא מחובר");
   const userId = link.user_id as string;
 
+  if (cb.data === "onb:start" || cb.data === "onb:later") return handleOnboardingCallback(db, cb, userId, chatId);
+
   const m = (cb.data ?? "").match(/^plan:(approve|reject):([0-9a-f-]{36})$/);
   if (!m) return answerCallback(cb.id);
   const [, action, planId] = m;
@@ -261,6 +295,37 @@ async function handleCallback(db: SupabaseClient, cb: NonNullable<TgUpdate["call
     { user_id: userId, role: "user", content: action === "approve" ? "[לחצתי על אישור התוכנית]" : "[לחצתי על 'לא עכשיו' לתוכנית]", input_kind: "text" },
     { user_id: userId, role: "assistant", content: text, telegram_message_id: tgId },
   ]);
+}
+
+// ---------------------------------------------------------------------------
+// כפתורי ההיכרות: "בואו נכיר" מתחיל שיחת היכרות עם הסוכן, "אחר כך" דוחה ליום
+// ---------------------------------------------------------------------------
+async function handleOnboardingCallback(
+  db: SupabaseClient, cb: NonNullable<TgUpdate["callback_query"]>, userId: string, chatId: number,
+): Promise<void> {
+  await answerCallback(cb.id);
+  await clearKeyboard(chatId, cb.message!.message_id);
+  const start = cb.data === "onb:start";
+  await db.from("profiles").update({ onboarding_status: start ? "in_progress" : "snoozed", onboarding_updated_at: new Date().toISOString() }).eq("id", userId);
+
+  if (!start) {
+    const text = "בכיף 🙂 אזכיר מחר. ובינתיים אפשר לשאול אותי כל דבר, או לשלוח תמונה של ארוחה.";
+    const tgId = await sendMessage(chatId, text);
+    await db.from("messages").insert([
+      { user_id: userId, role: "user", content: "[לחצתי 'אחר כך' על ההיכרות]", input_kind: "text" },
+      { user_id: userId, role: "assistant", content: text, telegram_message_id: tgId },
+    ]);
+    return;
+  }
+
+  await sendTyping(chatId);
+  const [profile, history] = await Promise.all([loadProfile(db, userId), loadHistory(db, userId)]);
+  const { data: saved } = await db.from("messages")
+    .insert({ user_id: userId, role: "user", content: "[לחצתי 'בואו נכיר']", input_kind: "text" }).select("id").single();
+  await agentTurn(db, {
+    userId, chatId, profile, history, savedId: saved?.id,
+    userText: "[הודעה יזומה של המערכת, לא נכתבה על ידי המשתמש] המשתמש לחץ \"בואו נכיר\". פתח את ההיכרות: משפט חם אחד על מה שנעשה (כמה שאלות קצרות, אפשר לדלג על כל אחת), ומיד השאלה הראשונה מתוך ה-<context>.",
+  });
 }
 
 // ---------------------------------------------------------------------------

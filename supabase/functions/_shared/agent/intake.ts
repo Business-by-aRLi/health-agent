@@ -10,6 +10,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 /** תמונת מצב של מה שכבר ידוע, מחושבת מהטבלאות עצמן */
 export interface IntakeFacts {
+  name_confirmed: boolean;       // המשתמש אמר איך לקרוא לו (display_name ברירת המחדל הוא תחילית המייל)
   sex: string | null;
   birth_date: string | null;
   height_cm: number | null;
@@ -34,6 +35,8 @@ export interface IntakeField {
 
 // הסדר הוא סדר העדיפות: מה שמשפיע הכי הרבה על איכות ההמלצות קודם
 export const INTAKE_FIELDS: IntakeField[] = [
+  { key: "name", label: "שם (איך לפנות)", hint: "כדי לפנות בשם, כמו מאמן אמיתי",
+    known: (f) => f.name_confirmed },
   { key: "sex", label: "מגדר", hint: "כדי לפנות בלשון הנכונה ולהתאים טווחי דופק, קלוריות וחלבון",
     known: (f) => f.sex !== null },
   { key: "goals", label: "יעדים", hint: "מה הכי חשוב עכשיו: ירידה במשקל, כושר, שינה, ביצועים, סתם להרגיש טוב",
@@ -60,7 +63,10 @@ export const INTAKE_FIELDS: IntakeField[] = [
 
 export const INTAKE_KEYS = INTAKE_FIELDS.map((f) => f.key);
 
-export interface IntakeStatusRow { field: string; status: "asked" | "declined" | "none"; ask_count: number; last_asked_at: string | null }
+export interface IntakeStatusRow { field: string; status: "asked" | "declined" | "none" | "answered"; ask_count: number; last_asked_at: string | null }
+
+/** מצב ההיכרות הראשונית. null = עוד לא הוצעה */
+export type OnboardingStatus = "offered" | "in_progress" | "snoozed" | "declined" | "done" | null;
 
 export const ASK_COOLDOWN_HOURS = 20;  // לכל היותר שאלת היכרות אחת בערך ביום
 export const MAX_ASKS_PER_FIELD = 2;   // שאלנו פעמיים ולא קיבלנו תשובה: מרפים
@@ -68,13 +74,22 @@ export const MAX_ASKS_PER_FIELD = 2;   // שאלנו פעמיים ולא קיב�
 export interface IntakePlan {
   missing: IntakeField[];        // מה עדיין לא ידוע (כדי שהסוכן לא יניח הנחות)
   suggest: IntakeField | null;   // מה מותר לשאול עכשיו, אם בכלל
+  onboarding: OnboardingStatus;
 }
 
-export function planIntake(facts: IntakeFacts, statuses: IntakeStatusRow[], now = new Date()): IntakePlan {
+/**
+ * בהיכרות פעילה (onboarding = in_progress) אין cooldown ואין תקרת פניות: המשתמש ביקש
+ * להכיר, ושואלים שאלה אחרי שאלה. סירוב ("מעדיפה לא") ו-"אין" עדיין מכובדים.
+ */
+export function planIntake(facts: IntakeFacts, statuses: IntakeStatusRow[], now = new Date(), onboarding: OnboardingStatus = null): IntakePlan {
   const byKey = new Map(statuses.map((s) => [s.field, s]));
   const missing = INTAKE_FIELDS.filter((f) =>
-    (f.applies?.(facts) ?? true) && !f.known(facts) && byKey.get(f.key)?.status !== "none"
+    (f.applies?.(facts) ?? true) && !f.known(facts) && !["none", "answered"].includes(byKey.get(f.key)?.status ?? "")
   );
+
+  if (onboarding === "in_progress") {
+    return { missing, suggest: missing.find((f) => byKey.get(f.key)?.status !== "declined") ?? null, onboarding };
+  }
 
   const lastAsk = Math.max(0, ...statuses.map((s) => (s.last_asked_at ? Date.parse(s.last_asked_at) : 0)));
   const cooling = now.getTime() - lastAsk < ASK_COOLDOWN_HOURS * 3600_000;
@@ -83,13 +98,13 @@ export function planIntake(facts: IntakeFacts, statuses: IntakeStatusRow[], now 
     return s?.status !== "declined" && (s?.ask_count ?? 0) < MAX_ASKS_PER_FIELD;
   }) ?? null;
 
-  return { missing, suggest };
+  return { missing, suggest, onboarding };
 }
 
 export async function loadIntake(db: SupabaseClient, userId: string, now = new Date()): Promise<IntakePlan> {
   const since = new Date(now.getTime() - 60 * 86_400_000).toISOString();
   const [profile, weight, goals, meds, conds, statuses] = await Promise.all([
-    db.from("profiles").select("sex, birth_date, height_cm, training_background, activity_level, injuries_notes, dietary_prefs, cycle_tracking_enabled").eq("id", userId).single(),
+    db.from("profiles").select("sex, birth_date, height_cm, training_background, activity_level, injuries_notes, dietary_prefs, cycle_tracking_enabled, onboarding_status").eq("id", userId).single(),
     db.from("health_samples").select("id").eq("user_id", userId).eq("metric", "body_mass").gte("start_at", since).limit(1),
     db.from("goals").select("id", { count: "exact", head: true }).eq("user_id", userId).eq("status", "active"),
     db.from("medications").select("id", { count: "exact", head: true }).eq("user_id", userId),
@@ -97,19 +112,31 @@ export async function loadIntake(db: SupabaseClient, userId: string, now = new D
     db.from("intake_status").select("field, status, ask_count, last_asked_at").eq("user_id", userId),
   ]);
   if (profile.error) throw profile.error;
+  const { onboarding_status, ...prof } = profile.data as Record<string, unknown>;
+  const rows = (statuses.data ?? []) as IntakeStatusRow[];
   const facts: IntakeFacts = {
-    ...(profile.data as Omit<IntakeFacts, "has_recent_weight" | "active_goals" | "medications" | "conditions">),
+    ...(prof as Omit<IntakeFacts, "name_confirmed" | "has_recent_weight" | "active_goals" | "medications" | "conditions">),
+    name_confirmed: rows.some((r) => r.field === "name" && r.status === "answered"),
     has_recent_weight: (weight.data ?? []).length > 0,
     active_goals: goals.count ?? 0,
     medications: meds.count ?? 0,
     conditions: conds.count ?? 0,
   };
-  return planIntake(facts, (statuses.data ?? []) as IntakeStatusRow[], now);
+  return planIntake(facts, rows, now, (onboarding_status ?? null) as OnboardingStatus);
 }
 
 /** השורות שנכנסות ל-<context> */
 export function intakeContextLines(plan: IntakePlan): string[] {
   const lines = [`פרטים שעדיין לא ידועים: ${plan.missing.length ? plan.missing.map((f) => `${f.label} [${f.key}]`).join(", ") : "אין, הפרופיל מלא"}`];
+  if (plan.onboarding === "in_progress") {
+    lines.push(plan.suggest
+      ? `היכרות ראשונית פעילה. השאלה הבאה: ${plan.suggest.label} [field=${plan.suggest.key}]. למה זה חשוב: ${plan.suggest.hint}. שאל רק אותה, אחרי שהגבת בקצרה לתשובה הקודמת.`
+      : `היכרות ראשונית פעילה, וכל הפרטים נאספו או דולגו. עכשיו שלב ההגדרות הראשוניות (ראו "היכרות ראשונית" בהנחיות), ובסיומו onboarding_update עם done.`);
+    return lines;
+  }
+  if (plan.onboarding === "offered" || plan.onboarding === "snoozed") {
+    lines.push(`הוצעה למשתמש היכרות ראשונית (${plan.onboarding === "offered" ? "עוד לא ענה" : "ביקש אחר כך"}). אם עכשיו מסכים במילים: onboarding_update עם in_progress.`);
+  }
   lines.push(plan.suggest
     ? `שאלת היכרות מותרת בהודעה הזו (לא חובה): ${plan.suggest.label} [field=${plan.suggest.key}]. למה זה חשוב: ${plan.suggest.hint}`
     : `שאלת היכרות: לא עכשיו (אל תשאל על פרטים חסרים ביוזמתך בהודעה הזו)`);
