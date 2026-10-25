@@ -52,7 +52,7 @@ async function runAll(db: SupabaseClient, now: Date) {
 }
 
 async function runUser(db: SupabaseClient, userId: string, chatId: number, now: Date) {
-  const { data: p, error } = await db.from("profiles").select("timezone, notification_prefs, onboarding_status, onboarding_updated_at").eq("id", userId).single();
+  const { data: p, error } = await db.from("profiles").select("timezone, notification_prefs, onboarding_status, onboarding_updated_at, display_name").eq("id", userId).single();
   if (error) throw error;
   const tz = p.timezone as string;
   const np = (p.notification_prefs ?? {}) as Record<string, unknown>;
@@ -82,6 +82,7 @@ async function runUser(db: SupabaseClient, userId: string, chatId: number, now: 
     sent: new Set(sentRows.map((r) => `${r.kind}:${r.ref_key}`)),
     mealRemindersToday: sentRows.filter((r) => r.kind === "meal_reminder" && String(r.ref_key).startsWith(today)).length,
     lastUserMessageAt: (lastMsg.data?.created_at as string | undefined) ?? null,
+    lastProactiveAt: sentRows.reduce<string | null>((m, r) => (!m || Date.parse(r.sent_at as string) > Date.parse(m) ? r.sent_at as string : m), null),
     sessions: (sessions.data ?? []) as PlannedSession[],
     workouts: (workouts.data ?? []) as Array<{ id: string; start_at: string; activity_type: string }>,
   });
@@ -90,7 +91,8 @@ async function runUser(db: SupabaseClient, userId: string, chatId: number, now: 
     await db.from("planned_sessions").update({ status: "done", workout_id: d.workout_id })
       .eq("user_id", userId).eq("id", d.session_id).eq("status", "planned");
   }
-  for (const r of due) await deliver(db, userId, chatId, r, now);
+  for (const r of due) await deliver(db, userId, chatId, r, now, (p.display_name ?? null) as string | null);
+  if (due.length) return; // הודעה יזומה אחת בכל ריצה מספיקה
   await maybeOnboard(db, userId, chatId, now, {
     timezone: tz, prefs, lastUserMessageAt: (lastMsg.data?.created_at as string | undefined) ?? null,
     status: (p.onboarding_status ?? null) as string | null, updatedAt: (p.onboarding_updated_at ?? null) as string | null,
@@ -128,14 +130,14 @@ async function maybeOnboard(
   ]);
 }
 
-async function deliver(db: SupabaseClient, userId: string, chatId: number, r: DueReminder, now: Date) {
+async function deliver(db: SupabaseClient, userId: string, chatId: number, r: DueReminder, now: Date, name: string | null) {
   // תפיסה לפני שליחה: אם השורה כבר קיימת, ריצה אחרת כבר שלחה את זה
   const { data: claimed } = await db.from("outbound_notifications")
     .upsert({ user_id: userId, kind: r.kind, ref_key: r.ref_key }, { onConflict: "user_id,kind,ref_key", ignoreDuplicates: true })
     .select("ref_key");
   if (!claimed?.length) return;
 
-  let text = fallbackText(r);
+  let text = fallbackText(r, name);
   try {
     text = await compose(db, userId, r, now) || text;
   } catch (e) {
@@ -150,6 +152,9 @@ async function deliver(db: SupabaseClient, userId: string, chatId: number, r: Du
 
 function trigger(r: DueReminder): string {
   const head = "[הודעה יזומה של המערכת, לא נכתבה על ידי המשתמש]";
+  if (r.kind === "daily_checkin") {
+    return `${head} המשתמש לא כתב ולא תיעד כלום היום. כתוב הודעת "מה שלומך" קצרה וחמה (משפט או שניים): פנייה בשם אם הוא ידוע ("היי <שם>"), שאלה איך עובר היום, ואמירה שאתה כאן אם צריך משהו. מותר לשלב פרט אחד אישי מה-<context> אם הוא בולט (למשל לילה קצר, אימון מתוכנן), אבל בלי ניתוח ובלי תזכורות. בלי לחץ ובלי אשמה.`;
+  }
   if (r.kind === "meal_reminder") {
     const slot = SLOT_HE[r.info.slot as keyof typeof SLOT_HE];
     return `${head} עד עכשיו לא נרשמה ${slot} היום. כתוב תזכורת קצרה ועדינה לתעד אותה בתמונה, בהודעה קולית או במילים. אם מתאים, אפשר לשאול בעדינות אם בכלל יצא לאכול. בלי אשמה ובלי לחץ.`;
@@ -162,7 +167,8 @@ function trigger(r: DueReminder): string {
   return `${head} האימון המתוכנן "${s.title}" (${when}) עבר, והשעון לא רשם אימון. שאל בקצרה ובחום אם הוא התקיים. אם כן, אפשר לספר איך היה. אם לא, להציע להזיז אותו, בלי אשמה.`;
 }
 
-function fallbackText(r: DueReminder): string {
+function fallbackText(r: DueReminder, name: string | null): string {
+  if (r.kind === "daily_checkin") return `היי${name ? ` ${name}` : ""} 👋 מה שלומך היום? אני כאן אם צריך משהו.`;
   if (r.kind === "meal_reminder") {
     return `עוד לא רשמנו ${SLOT_HE[r.info.slot as keyof typeof SLOT_HE]} היום. אם יצא לאכול, אפשר לשלוח תמונה או לכתוב במילים מה היה 🙂`;
   }

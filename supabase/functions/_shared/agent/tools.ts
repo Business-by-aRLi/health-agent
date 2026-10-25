@@ -494,7 +494,7 @@ const TOOL_DEFS: Tool[] = [
   {
     name: "set_reminder_prefs",
     description:
-      "שינוי התזכורות היזומות לפי בקשת המשתמש. meals / workouts: הפעלה או כיבוי כללי. breakfast / lunch / dinner: שעת הבדיקה HH:MM, או \"off\" לכיבוי של אותה ארוחה. quiet_start / quiet_end: שעות שקט. pre_workout_lead_min: כמה דקות לפני אימון לשלוח תדריך. שדה שלא משתנה = null.",
+      "שינוי התזכורות היזומות לפי בקשת המשתמש. meals / workouts: הפעלה או כיבוי כללי. breakfast / lunch / dinner: שעת הבדיקה HH:MM, או \"off\" לכיבוי של אותה ארוחה. checkin: השעה של \"מה שלומך היום?\" (נשלח רק אם עד אז לא היה קשר), או \"off\". quiet_start / quiet_end: שעות שקט. pre_workout_lead_min: כמה דקות לפני אימון לשלוח תדריך. שדה שלא משתנה = null.",
     strict: true,
     input_schema: {
       type: "object",
@@ -504,11 +504,12 @@ const TOOL_DEFS: Tool[] = [
         breakfast: { type: ["string", "null"] },
         lunch: { type: ["string", "null"] },
         dinner: { type: ["string", "null"] },
+        checkin: { type: ["string", "null"] },
         quiet_start: { type: ["string", "null"] },
         quiet_end: { type: ["string", "null"] },
         pre_workout_lead_min: { type: ["integer", "null"] },
       },
-      required: ["meals", "workouts", "breakfast", "lunch", "dinner", "quiet_start", "quiet_end", "pre_workout_lead_min"],
+      required: ["meals", "workouts", "breakfast", "lunch", "dinner", "checkin", "quiet_start", "quiet_end", "pre_workout_lead_min"],
       additionalProperties: false,
     },
   },
@@ -1126,6 +1127,7 @@ export async function executeTool(name: string, input: Input, ctx: ToolContext):
         checks[slot] = v === "off" ? null : hhmmOrThrow(v, slot);
       }
       if (Object.keys(checks).length) r.meal_checks = checks;
+      if (input.checkin != null) r.checkin = input.checkin === "off" ? null : hhmmOrThrow(input.checkin, "checkin");
       if (input.quiet_start) r.quiet_start = hhmmOrThrow(input.quiet_start, "quiet_start");
       if (input.quiet_end) r.quiet_end = hhmmOrThrow(input.quiet_end, "quiet_end");
       if (input.pre_workout_lead_min != null) {

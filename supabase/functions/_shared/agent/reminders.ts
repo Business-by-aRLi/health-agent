@@ -16,6 +16,7 @@ const SLOT_FROM: Record<MealSlot, string> = { breakfast: "04:00", lunch: "11:00"
 export const MAX_MEAL_REMINDERS_PER_DAY = 2;
 export const ACTIVE_CHAT_MIN = 20;        // המשתמש כתב בדקות האחרונות: לא קוטעים
 export const STALE_AFTER_MIN = 120;       // תזכורת שפספסה את הזמן שלה בשעתיים כבר לא רלוונטית
+export const CHECKIN_GAP_MIN = 90;        // לא שולחים "מה שלומך" מיד אחרי פנייה יזומה אחרת
 const DEFAULT_SESSION_MIN = 60;
 const FOLLOWUP_AFTER_END_MIN = 60;
 const FOLLOWUP_NO_START = "20:00";
@@ -39,12 +40,13 @@ export interface SchedulerState {
   sent: Set<string>;                    // "kind:ref_key" שכבר נשלחו
   mealRemindersToday: number;
   lastUserMessageAt: string | null;
+  lastProactiveAt: string | null;       // ההודעה היזומה האחרונה מכל סוג (כולל הצעת היכרות)
   sessions: PlannedSession[];           // של היום
   workouts: Array<{ id: string; start_at: string; activity_type: string }>; // של היום
 }
 
 export interface DueReminder {
-  kind: "meal_reminder" | "pre_workout" | "workout_followup";
+  kind: "meal_reminder" | "pre_workout" | "workout_followup" | "daily_checkin";
   ref_key: string;
   info: Record<string, unknown>;
 }
@@ -107,8 +109,22 @@ export function planReminders(st: SchedulerState): { due: DueReminder[]; autoDon
     }
   }
 
+  // ---- "מה שלומך היום?": לא כתב ולא תיעד כלום עד שעת הבדיקה
+  // 🧠 משתמש שקט מקבל הודעה אחת ביום, לא שרשרת: אחרי ה-check-in, כל עוד לא ענה,
+  //    לא נשלחות גם תזכורות ארוחה.
+  const wroteToday = st.lastUserMessageAt !== null && localDate(st.lastUserMessageAt, st.timezone) === today;
+  const quietUser = !wroteToday && st.mealsToday.length === 0;
+  const checkinSent = st.sent.has(`daily_checkin:${today}`);
+  if (st.prefs.checkin && quietUser && !quiet && !checkinSent) {
+    const recentProactive = st.lastProactiveAt !== null && now - Date.parse(st.lastProactiveAt) < CHECKIN_GAP_MIN * 60_000;
+    if (isDue(at(today, st.prefs.checkin, st.timezone), now) && !recentProactive && due.length === 0) {
+      due.push({ kind: "daily_checkin", ref_key: today, info: {} });
+    }
+  }
+  const checkinPending = due.some((d) => d.kind === "daily_checkin") || (checkinSent && !wroteToday);
+
   // ---- ארוחות שלא תועדו
-  if (st.prefs.meals && st.mealTrackingActive && !quiet && !chatting) {
+  if (st.prefs.meals && st.mealTrackingActive && !quiet && !chatting && !checkinPending) {
     let budget = MAX_MEAL_REMINDERS_PER_DAY - st.mealRemindersToday;
     for (const slot of ["breakfast", "lunch", "dinner"] as MealSlot[]) {
       const check = st.prefs.meal_checks[slot];

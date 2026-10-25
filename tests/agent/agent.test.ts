@@ -315,7 +315,7 @@ Deno.test("תזכורות: ארוחה שלא תועדה, שעות שקט, תקר
   const tz = "Asia/Jerusalem"; // נובמבר: +02:00
   const base = {
     timezone: tz, prefs: DEFAULT_PREFS, mealTrackingActive: true, mealsToday: [] as string[], sent: new Set<string>(),
-    mealRemindersToday: 0, lastUserMessageAt: null, sessions: [], workouts: [],
+    mealRemindersToday: 0, lastUserMessageAt: null, lastProactiveAt: null, sessions: [], workouts: [],
   };
   const at = (hhmm: string) => new Date(`2026-11-03T${hhmm}:00+02:00`);
 
@@ -343,8 +343,8 @@ Deno.test("תזכורות: תדריך לפני אימון (כולל הזזה מ�
   const at = (hhmm: string) => new Date(`2026-11-03T${hhmm}:00+02:00`);
   const session = { id: "s1", planned_date: "2026-11-03", planned_start: "07:30:00", duration_min: 45, title: "שחייה קלה", activity_type: "pool_swim", status: "planned" };
   const base = {
-    timezone: tz, prefs: DEFAULT_PREFS, mealTrackingActive: false, mealsToday: [], sent: new Set<string>(),
-    mealRemindersToday: 0, lastUserMessageAt: null, sessions: [session], workouts: [] as Array<{ id: string; start_at: string; activity_type: string }>,
+    timezone: tz, prefs: { ...DEFAULT_PREFS, checkin: null }, mealTrackingActive: false, mealsToday: [], sent: new Set<string>(),
+    mealRemindersToday: 0, lastUserMessageAt: null, lastProactiveAt: null, sessions: [session], workouts: [] as Array<{ id: string; start_at: string; activity_type: string }>,
   };
   // 90 דקות לפני = 06:00, בשעות השקט → זז ל-07:00
   assertEquals(planReminders({ ...base, now: at("06:30") }).due, []);
@@ -425,4 +425,31 @@ Deno.test("היכרות ראשונית: מתי מציעים ביוזמה", async
   assertEquals(planOnboarding({ ...stalled, missingCount: 0 }), null);
   assertEquals(planOnboarding({ ...base, status: "declined" }), null);
   assertEquals(planOnboarding({ ...base, status: "done" }), null);
+});
+
+Deno.test("מה שלומך היום: רק למי ששקט עד הצהריים, פעם ביום, ובלי שרשרת תזכורות אחריו", async () => {
+  const { planReminders, DEFAULT_PREFS } = await import("../../supabase/functions/_shared/agent/reminders.ts");
+  const at = (hhmm: string, day = "03") => `2026-11-${day}T${hhmm}:00+02:00`;
+  const base = {
+    timezone: "Asia/Jerusalem", prefs: DEFAULT_PREFS, mealTrackingActive: false, mealsToday: [] as string[], sent: new Set<string>(),
+    mealRemindersToday: 0, lastUserMessageAt: at("21:00", "02"), lastProactiveAt: null as string | null, sessions: [], workouts: [],
+  };
+  const kinds = (o: Partial<typeof base> & { now: Date }) => planReminders({ ...base, ...o }).due.map((d) => `${d.kind}:${d.ref_key}`);
+
+  assertEquals(kinds({ now: new Date(at("12:05")) }), ["daily_checkin:2026-11-03"]);
+  assertEquals(kinds({ now: new Date(at("11:55")) }), [], "עוד לא 12:00");
+  assertEquals(kinds({ now: new Date(at("14:30")) }), [], "עבר החלון");
+  assertEquals(kinds({ now: new Date(at("12:05")), lastUserMessageAt: at("08:00") }), [], "כתב היום");
+  assertEquals(kinds({ now: new Date(at("12:05")), mealsToday: [at("09:00")] }), [], "תיעד ארוחה");
+  assertEquals(kinds({ now: new Date(at("12:05")), sent: new Set(["daily_checkin:2026-11-03"]) }), [], "פעם ביום");
+  assertEquals(kinds({ now: new Date(at("12:05")), lastProactiveAt: at("11:00") }), [], "פנייה יזומה אחרת לפני רגע");
+  assertEquals(kinds({ now: new Date(at("12:05")), prefs: { ...DEFAULT_PREFS, checkin: null } }), [], "כבוי");
+  assertEquals(kinds({ now: new Date(at("11:05")), prefs: { ...DEFAULT_PREFS, checkin: "11:00" } }), ["daily_checkin:2026-11-03"]);
+
+  // אחרי check-in בלי תשובה: אין תזכורת צהריים. אחרי שענה: יש
+  const tracking = { mealTrackingActive: true, sent: new Set(["daily_checkin:2026-11-03"]), now: new Date(at("14:35")) };
+  assertEquals(kinds(tracking), []);
+  assertEquals(kinds({ ...tracking, lastUserMessageAt: at("12:30") }), ["meal_reminder:2026-11-03:lunch"]);
+  // ב-10:40 תזכורת בוקר קודמת; ה-check-in לא נשלח באותה ריצה עם תזכורת אחרת
+  assertEquals(kinds({ mealTrackingActive: true, now: new Date(at("10:40")) }), ["meal_reminder:2026-11-03:breakfast"]);
 });
