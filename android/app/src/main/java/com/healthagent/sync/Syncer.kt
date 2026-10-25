@@ -18,6 +18,8 @@ import androidx.health.connect.client.records.StepsRecord
 import androidx.health.connect.client.records.TotalCaloriesBurnedRecord
 import androidx.health.connect.client.records.Vo2MaxRecord
 import androidx.health.connect.client.records.WeightRecord
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
@@ -53,7 +55,11 @@ object Syncer {
 
     class SyncException(message: String, val retryable: Boolean) : Exception(message)
 
-    suspend fun run(context: Context): String {
+    // 🧠 תמיד ב-Dispatchers.IO: Android חוסם רשת על ה-thread הראשי (NetworkOnMainThreadException),
+    //    ו"סנכרון עכשיו" נקרא מהמסך. גם הקריאה מ-Health Connect ובניית ה-JSON לא שייכות ל-UI.
+    suspend fun run(context: Context): String = withContext(Dispatchers.IO) { syncOnce(context) }
+
+    private suspend fun syncOnce(context: Context): String {
         val settings = Settings(context)
         settings.lastAttemptAt = System.currentTimeMillis()
         try {
@@ -132,5 +138,5 @@ object Syncer {
 }
 
 object BuildConfigInfo {
-    const val VERSION = "1.0.1"
+    const val VERSION = "1.0.2"
 }
