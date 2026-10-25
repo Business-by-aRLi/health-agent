@@ -46,7 +46,9 @@ object Syncer {
         HealthPermission.PERMISSION_READ_HEALTH_DATA_HISTORY
 
     private val RESEND: Duration = Duration.ofHours(48)
-    private val FIRST_SYNC: Duration = Duration.ofDays(30)
+    // בלי הרשאת "נתונים מהעבר" Health Connect מאפשר לקרוא עד 30 יום אחורה. 29 משאיר מרווח
+    // לקריאת השינה, שמתחילה 12 שעות לפני החלון
+    private val FIRST_SYNC: Duration = Duration.ofDays(29)
     private val WINDOW: Duration = Duration.ofDays(2)
 
     class SyncException(message: String, val retryable: Boolean) : Exception(message)
@@ -91,8 +93,12 @@ object Syncer {
             settings.lastStatus = "⚠️ ${stamp(Instant.now())}: אין הרשאה (אולי חסרה הרשאת קריאה ברקע)"
             throw SyncException("אין הרשאה: ${e.message}", false)
         } catch (e: IOException) {
-            settings.lastStatus = "⚠️ ${stamp(Instant.now())}: אין חיבור לשרת, ננסה שוב"
+            settings.lastStatus = "⚠️ ${stamp(Instant.now())}: אין חיבור לשרת (${e.message?.take(120)})"
             throw SyncException("רשת: ${e.message}", true)
+        } catch (e: Exception) {
+            // כל שגיאה אחרת (למשל מ-Health Connect) מוצגת על המסך עם הסוג וההודעה, כדי שאפשר יהיה לאבחן
+            settings.lastStatus = "⚠️ ${stamp(Instant.now())}: ${e.javaClass.simpleName}: ${e.message?.take(200)}"
+            throw SyncException("${e.javaClass.simpleName}: ${e.message}", true)
         }
     }
 
@@ -126,5 +132,5 @@ object Syncer {
 }
 
 object BuildConfigInfo {
-    const val VERSION = "1.0.0"
+    const val VERSION = "1.0.1"
 }
