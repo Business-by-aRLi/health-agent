@@ -1,6 +1,7 @@
 // =====================================================================
 // POST /functions/v1/ingest-healthkit
-// מקבל JSON מ-Health Auto Export (REST API automation) וכותב למודל הקנוני.
+// מקבל JSON מ-Health Auto Export (iPhone) או מ-Health Agent Sync (אנדרואיד, Health Connect)
+// וכותב למודל הקנוני. המתאם נבחר לפי מבנה ה-payload.
 //
 // Auth: Authorization: Bearer <ingest_token>  (לא JWT של Supabase!)
 //   הטוקן מונפק ב-create_ingest_source() ונשמר אצלנו רק כ-hash.
@@ -16,6 +17,7 @@
 // =====================================================================
 
 import { adaptHealthAutoExport, AdapterError } from "../_shared/adapters/health-auto-export.ts";
+import { adaptHealthConnect, HcAdapterError, isHealthConnectPayload } from "../_shared/adapters/health-connect.ts";
 import { bearerToken, error, json, sha256Hex } from "../_shared/http.ts";
 import { serviceClient } from "../_shared/supabase.ts";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -97,12 +99,10 @@ async function processEvent(
   // ---- 4. המרה למודל הקנוני
   let adapted;
   try {
-    adapted = adaptHealthAutoExport(payload, {
-      timezone: profile.timezone,
-      cycleTracking: profile.cycle_tracking_enabled,
-    });
+    const ctx = { timezone: profile.timezone, cycleTracking: profile.cycle_tracking_enabled };
+    adapted = isHealthConnectPayload(payload) ? adaptHealthConnect(payload, ctx) : adaptHealthAutoExport(payload, ctx);
   } catch (e) {
-    if (e instanceof AdapterError) return await fail(422, "unrecognized_format", e.message);
+    if (e instanceof AdapterError || e instanceof HcAdapterError) return await fail(422, "unrecognized_format", e.message);
     return await fail(500, "adapter_crash", String(e));
   }
 
