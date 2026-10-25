@@ -49,7 +49,7 @@ export async function buildContext(db: SupabaseClient, p: UserProfile, now = new
   const time = now.toLocaleTimeString("he-IL", { timeZone: tz, hour: "2-digit", minute: "2-digit" });
   const dow = HE_DAYS[new Date(`${today}T12:00:00Z`).getUTCDay()];
 
-  const [summaries, goals, memory, workouts, sources, plan, meds, conditions, intake, events, meals, proposed] = await Promise.all([
+  const [summaries, goals, memory, workouts, sources, plan, meds, conditions, intake, events, meals, proposed, sessions] = await Promise.all([
     db.from("daily_summaries")
       .select("day, steps, active_kcal, exercise_min, workouts_count, resting_hr, hrv_avg, sleep_min, sleep_efficiency, weight_kg, recovery_score, cycle, baselines")
       .eq("user_id", p.id).gte("day", weekAgo).lte("day", today).order("day"),
@@ -70,6 +70,8 @@ export async function buildContext(db: SupabaseClient, p: UserProfile, now = new
     db.from("nutrition_plans").select("id, plan_types, kcal_target, protein_g, created_at")
       .eq("user_id", p.id).eq("status", "proposed").gte("created_at", new Date(now.getTime() - 7 * 86_400_000).toISOString())
       .order("created_at", { ascending: false }).limit(1).maybeSingle(),
+    db.from("planned_sessions").select("id, planned_date, planned_start, duration_min, activity_type, title, status")
+      .eq("user_id", p.id).gte("planned_date", addDays(today, -1)).lte("planned_date", addDays(today, 7)).order("planned_date").order("planned_start"),
   ]);
 
   const rows = summaries.data ?? [];
@@ -118,6 +120,9 @@ export async function buildContext(db: SupabaseClient, p: UserProfile, now = new
   if (meds.data?.length) lines.push(`תרופות ותוספים פעילים: ${meds.data.map((x) => `[medication_id=${x.id}|${x.kind}] ${x.name}${x.dose ? ` ${x.dose}${x.dose_unit ?? ""}` : ""}${[x.frequency, x.timing, x.reason && `סיבה: ${x.reason}`].filter(Boolean).map((t) => ` (${t})`).join("")}`).join("; ")}`);
   if (conditions.data?.length) lines.push(`רקע רפואי: ${conditions.data.map((x) => `[condition_id=${x.id}] ${x.name} (${x.status === "resolved" ? "עבר" : x.status === "suspected" ? "חשד" : "פעיל"}${x.diagnosed_on ? `, מ-${x.diagnosed_on}` : ""})${x.notes ? `: ${x.notes}` : ""}`).join("; ")}`);
   lines.push(...intakeContextLines(intake));
+
+  const ps = sessions.data ?? [];
+  lines.push(`אימונים מתוכננים (אתמול עד שבוע קדימה): ${ps.length ? ps.map((x) => `[session_id=${x.id}] ${x.planned_date}${x.planned_start ? ` ${String(x.planned_start).slice(0, 5)}` : ""} ${x.title} (${x.activity_type}${x.duration_min ? `, ${x.duration_min}ד'` : ""}) ${x.status}`).join("; ") : "אין"}`);
 
   const ev = events.data ?? [];
   if (ev.length) {

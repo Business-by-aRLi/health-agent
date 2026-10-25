@@ -2,7 +2,7 @@
   "tasks": {
     "test": "deno test --allow-read --allow-env tests/adapters tests/agent",
     "test:sql": "bash tests/sql/run.sh",
-    "check": "deno check supabase/functions/ingest-healthkit/index.ts supabase/functions/telegram-webhook/index.ts tests/adapters/*.ts tests/agent/*.ts",
+    "check": "deno check supabase/functions/ingest-healthkit/index.ts supabase/functions/telegram-webhook/index.ts supabase/functions/coach-scheduler/index.ts tests/adapters/*.ts tests/agent/*.ts",
     "lint": "deno lint supabase/functions tests"
   },
   "fmt": {

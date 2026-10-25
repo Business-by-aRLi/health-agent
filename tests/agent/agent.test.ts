@@ -309,3 +309,58 @@ Deno.test("loop: תמונה נשלחת כבלוק image לפני הטקסט", as
   assertEquals(content[0], { type: "image", source: { type: "base64", media_type: "image/jpeg", data: "AAAA" } });
   assertEquals(content[1], { type: "text", text: "<context/>\n\nארוחת בוקר" });
 });
+
+Deno.test("תזכורות: ארוחה שלא תועדה, שעות שקט, תקרה יומית, שיחה פעילה", async () => {
+  const { planReminders, DEFAULT_PREFS } = await import("../../supabase/functions/_shared/agent/reminders.ts");
+  const tz = "Asia/Jerusalem"; // נובמבר: +02:00
+  const base = {
+    timezone: tz, prefs: DEFAULT_PREFS, mealTrackingActive: true, mealsToday: [] as string[], sent: new Set<string>(),
+    mealRemindersToday: 0, lastUserMessageAt: null, sessions: [], workouts: [],
+  };
+  const at = (hhmm: string) => new Date(`2026-11-03T${hhmm}:00+02:00`);
+
+  // 14:35, אין ארוחה מ-11:00: תזכורת צהריים (ובוקר כבר לא רלוונטית: עברו יותר משעתיים מ-10:30)
+  let r = planReminders({ ...base, now: at("14:35") });
+  assertEquals(r.due.map((d) => d.ref_key), ["2026-11-03:lunch"]);
+  // 10:40 ללא ארוחה: תזכורת בוקר
+  assertEquals(planReminders({ ...base, now: at("10:40") }).due.map((d) => d.ref_key), ["2026-11-03:breakfast"]);
+  // ארוחה ב-12:30 עונה על הצהריים, ארוחה ב-08:00 לא
+  assertEquals(planReminders({ ...base, now: at("14:35"), mealsToday: ["2026-11-03T12:30:00+02:00"] }).due, []);
+  assertEquals(planReminders({ ...base, now: at("14:35"), mealsToday: ["2026-11-03T08:00:00+02:00"] }).due.length, 1);
+  // כבר נשלחה / עברה התקרה היומית / המשתמש באמצע שיחה / לא מתעדת ארוחות
+  assertEquals(planReminders({ ...base, now: at("14:35"), sent: new Set(["meal_reminder:2026-11-03:lunch"]) }).due, []);
+  assertEquals(planReminders({ ...base, now: at("14:35"), mealRemindersToday: 2 }).due, []);
+  assertEquals(planReminders({ ...base, now: at("14:35"), lastUserMessageAt: "2026-11-03T14:25:00+02:00" }).due, []);
+  assertEquals(planReminders({ ...base, now: at("14:35"), mealTrackingActive: false }).due, []);
+  // שעות שקט: ארוחת ערב שהוגדרה ל-22:15 לא נשלחת
+  r = planReminders({ ...base, now: at("22:20"), prefs: { ...DEFAULT_PREFS, meal_checks: { ...DEFAULT_PREFS.meal_checks, dinner: "22:15" } } });
+  assertEquals(r.due, []);
+});
+
+Deno.test("תזכורות: תדריך לפני אימון (כולל הזזה מסוף שעות השקט), מעקב, וסימון אוטומטי כשהשעון רשם", async () => {
+  const { planReminders, DEFAULT_PREFS } = await import("../../supabase/functions/_shared/agent/reminders.ts");
+  const tz = "Asia/Jerusalem";
+  const at = (hhmm: string) => new Date(`2026-11-03T${hhmm}:00+02:00`);
+  const session = { id: "s1", planned_date: "2026-11-03", planned_start: "07:30:00", duration_min: 45, title: "שחייה קלה", activity_type: "pool_swim", status: "planned" };
+  const base = {
+    timezone: tz, prefs: DEFAULT_PREFS, mealTrackingActive: false, mealsToday: [], sent: new Set<string>(),
+    mealRemindersToday: 0, lastUserMessageAt: null, sessions: [session], workouts: [] as Array<{ id: string; start_at: string; activity_type: string }>,
+  };
+  // 90 דקות לפני = 06:00, בשעות השקט → זז ל-07:00
+  assertEquals(planReminders({ ...base, now: at("06:30") }).due, []);
+  assertEquals(planReminders({ ...base, now: at("07:05") }).due.map((d) => d.kind), ["pre_workout"]);
+  assertEquals(planReminders({ ...base, now: at("07:40") }).due, []); // האימון כבר התחיל
+  // מעקב: 07:30 + 45 + 60 = 09:15
+  assertEquals(planReminders({ ...base, now: at("09:10") }).due, []);
+  assertEquals(planReminders({ ...base, now: at("09:20") }).due.map((d) => d.kind), ["workout_followup"]);
+  // השעון רשם אימון ב-07:40: מסומן כבוצע, בלי הודעה
+  const done = planReminders({ ...base, now: at("09:20"), workouts: [{ id: "w1", start_at: "2026-11-03T05:40:00Z", activity_type: "pool_swim" }] });
+  assertEquals(done.due, []);
+  assertEquals(done.autoDone, [{ session_id: "s1", workout_id: "w1" }]);
+  // אימון בלי שעה: מעקב ב-20:00 בלבד
+  const noStart = { ...session, id: "s2", planned_start: null };
+  assertEquals(planReminders({ ...base, sessions: [noStart], now: at("20:05") }).due.map((d) => d.ref_key), ["s2"]);
+  assertEquals(planReminders({ ...base, sessions: [noStart], now: at("12:00") }).due, []);
+  // workouts כבוי
+  assertEquals(planReminders({ ...base, prefs: { ...DEFAULT_PREFS, workouts: false }, now: at("09:20") }).due, []);
+});

@@ -9,6 +9,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type Anthropic from "@anthropic-ai/sdk";
 import { INTAKE_KEYS } from "./intake.ts";
+import { mergePrefs } from "./reminder-prefs.ts";
 import { ageFrom, localDate } from "../time.ts";
 import { addTotals, energyEstimate, type MealItem, mealFeedback, type PlanTargets, planWarnings, sumItems, type Totals, validateItem, ZERO } from "./nutrition.ts";
 
@@ -26,6 +27,7 @@ const NON_STRICT = new Set([
   "get_daily_summaries", "get_workouts", "get_workout_detail", "get_sleep", "get_trend", "get_samples", "get_events",
   "update_profile", "add_medication", "log_event",
   "log_meal", "update_meal", "get_meals", "propose_nutrition_plan",
+  "plan_session", "update_planned_session", "set_reminder_prefs",
 ]);
 export const STRICT_LIMITS = { tools: 20, unionParams: 16, optionalParams: 24 };
 
@@ -447,6 +449,66 @@ const TOOL_DEFS: Tool[] = [
         rationale: { type: "string", description: "למה התוכנית הזו, בשניים-שלושה משפטים" },
       },
       required: ["plan_types", "kcal_target", "protein_g", "carbs_g", "fat_g", "fiber_g", "rules", "rationale"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "plan_session",
+    description:
+      "קביעת אימון מתוכנן (\"מחר ב-7 שחייה 45 דקות\"). לפני אימון עם שעה נשלח תדריך קצר, ואם השעון לא רושם אימון מתאים, נשלחת שאלת מעקב. date ו-start בשעון המקומי. start = null אם אין שעה קבועה. activity_type מנורמל כמו ב-get_workouts (pool_swim, outdoor_run, functional_strength_training, pilates, outdoor_cycling, outdoor_walk...).",
+    strict: true,
+    input_schema: {
+      type: "object",
+      properties: {
+        date: DATE,
+        start: { type: ["string", "null"], description: "HH:MM" },
+        duration_min: { type: ["integer", "null"] },
+        activity_type: { type: "string" },
+        title: { type: "string", description: "בעברית, קצר: \"שחייה 1,500 מ' קלה\"" },
+        details: { type: ["string", "null"], description: "מבנה האימון, עצימות, מטרה" },
+      },
+      required: ["date", "start", "duration_min", "activity_type", "title", "details"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "update_planned_session",
+    description:
+      "שינוי אימון מתוכנן (לפי session_id מתוך <context>): הזזה (date/start), סימון שבוצע (done), שלא בוצע (skipped), או ביטול (skipped עם סיבה). שדה שלא משתנה = null.",
+    strict: true,
+    input_schema: {
+      type: "object",
+      properties: {
+        session_id: { type: "string" },
+        status: { type: ["string", "null"], enum: ["planned", "done", "skipped", null] },
+        date: { type: ["string", "null"], description: "YYYY-MM-DD" },
+        start: { type: ["string", "null"], description: "HH:MM" },
+        duration_min: { type: ["integer", "null"] },
+        title: { type: ["string", "null"] },
+        reason: { type: ["string", "null"], description: "למה השתנה (נשמר למעקב)" },
+      },
+      required: ["session_id", "status", "date", "start", "duration_min", "title", "reason"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "set_reminder_prefs",
+    description:
+      "שינוי התזכורות היזומות לפי בקשת המשתמש. meals / workouts: הפעלה או כיבוי כללי. breakfast / lunch / dinner: שעת הבדיקה HH:MM, או \"off\" לכיבוי של אותה ארוחה. quiet_start / quiet_end: שעות שקט. pre_workout_lead_min: כמה דקות לפני אימון לשלוח תדריך. שדה שלא משתנה = null.",
+    strict: true,
+    input_schema: {
+      type: "object",
+      properties: {
+        meals: { type: ["boolean", "null"] },
+        workouts: { type: ["boolean", "null"] },
+        breakfast: { type: ["string", "null"] },
+        lunch: { type: ["string", "null"] },
+        dinner: { type: ["string", "null"] },
+        quiet_start: { type: ["string", "null"] },
+        quiet_end: { type: ["string", "null"] },
+        pre_workout_lead_min: { type: ["integer", "null"] },
+      },
+      required: ["meals", "workouts", "breakfast", "lunch", "dinner", "quiet_start", "quiet_end", "pre_workout_lead_min"],
       additionalProperties: false,
     },
   },
@@ -992,6 +1054,76 @@ export async function executeTool(name: string, input: Input, ctx: ToolContext):
       };
     }
 
+    case "plan_session": {
+      const date = String(input.date ?? "");
+      if (!ISO_DATE.test(date) || Number.isNaN(Date.parse(date))) throw new ToolInputError("date בפורמט YYYY-MM-DD");
+      if (date < localDate(new Date().toISOString(), timezone)) throw new ToolInputError("אי אפשר לתכנן אימון לתאריך שעבר");
+      const start = input.start ? hhmmOrThrow(input.start, "start") : null;
+      const duration = input.duration_min == null ? null : Math.round(Number(input.duration_min));
+      if (duration !== null && !(duration >= 5 && duration <= 600)) throw new ToolInputError("duration_min בין 5 ל-600");
+      const activity = String(input.activity_type ?? "").trim().toLowerCase();
+      const title = String(input.title ?? "").trim();
+      if (!activity || !title) throw new ToolInputError("activity_type ו-title חובה");
+      const { data, error } = await db.from("planned_sessions").insert({
+        user_id: userId, planned_date: date, planned_start: start, duration_min: duration, activity_type: activity, title,
+        details: input.details ? { notes: String(input.details) } : {}, created_by: "agent",
+      }).select("id").single();
+      if (error) throw error;
+      return { ok: true, session_id: data.id, reminders: start ? "תדריך לפני האימון + מעקב אחריו" : "מעקב בערב אם לא נרשם אימון" };
+    }
+
+    case "update_planned_session": {
+      const id = String(input.session_id ?? "");
+      const patch: Record<string, unknown> = {};
+      if (input.status) {
+        if (!["planned", "done", "skipped"].includes(String(input.status))) throw new ToolInputError("status: planned | done | skipped");
+        patch.status = input.status;
+      }
+      if (input.date) {
+        if (!ISO_DATE.test(String(input.date))) throw new ToolInputError("date בפורמט YYYY-MM-DD");
+        patch.planned_date = input.date;
+        if (!input.status) patch.status = "planned"; // הזזה מחזירה למצב מתוכנן, ותזכורות יישלחו לפי המועד החדש
+      }
+      if (input.start) patch.planned_start = hhmmOrThrow(input.start, "start");
+      if (input.duration_min != null) patch.duration_min = Math.round(Number(input.duration_min));
+      if (input.title) patch.title = String(input.title);
+      if (input.reason) patch.change_reason = String(input.reason);
+      if (!Object.keys(patch).length) return { ok: true, changed: [] };
+      const { data, error } = await db.from("planned_sessions").update(patch).eq("user_id", userId).eq("id", id).select("id");
+      if (error) throw error;
+      // מועד חדש = תזכורות חדשות: מוחקים את סימוני "נשלח" של האימון הזה
+      if ((data ?? []).length && (patch.planned_date || patch.planned_start)) {
+        await db.from("outbound_notifications").delete().eq("user_id", userId).eq("ref_key", id);
+      }
+      return { ok: (data ?? []).length > 0, changed: Object.keys(patch) };
+    }
+
+    case "set_reminder_prefs": {
+      const { data: p, error } = await db.from("profiles").select("notification_prefs").eq("id", userId).single();
+      if (error) throw error;
+      const prefs = (p.notification_prefs ?? {}) as Record<string, unknown>;
+      const r = { ...((prefs.reminders ?? {}) as Record<string, unknown>) };
+      const checks = { ...((r.meal_checks ?? {}) as Record<string, unknown>) };
+      if (typeof input.meals === "boolean") r.meals = input.meals;
+      if (typeof input.workouts === "boolean") r.workouts = input.workouts;
+      for (const slot of ["breakfast", "lunch", "dinner"]) {
+        const v = input[slot];
+        if (v === null || v === undefined) continue;
+        checks[slot] = v === "off" ? null : hhmmOrThrow(v, slot);
+      }
+      if (Object.keys(checks).length) r.meal_checks = checks;
+      if (input.quiet_start) r.quiet_start = hhmmOrThrow(input.quiet_start, "quiet_start");
+      if (input.quiet_end) r.quiet_end = hhmmOrThrow(input.quiet_end, "quiet_end");
+      if (input.pre_workout_lead_min != null) {
+        const lead = Math.round(Number(input.pre_workout_lead_min));
+        if (!(lead >= 10 && lead <= 600)) throw new ToolInputError("pre_workout_lead_min בין 10 ל-600");
+        r.pre_workout_lead_min = lead;
+      }
+      const { error: e2 } = await db.from("profiles").update({ notification_prefs: { ...prefs, reminders: r } }).eq("id", userId);
+      if (e2) throw e2;
+      return { ok: true, reminders: mergePrefs(r) };
+    }
+
     default:
       throw new ToolInputError(`כלי לא מוכר: ${name}`);
   }
@@ -1062,6 +1194,13 @@ async function energyFor(db: SupabaseClient, userId: string) {
     weight_kg: weight, avg_active_kcal: active.length >= 5 ? active.reduce((a, b) => a + b, 0) / active.length : null,
   });
   return { ...est, sex: p?.sex ?? null, weight_kg: weight };
+}
+
+/** "7:05" / "07:05" / "07:05:00" → "07:05" */
+function hhmmOrThrow(v: unknown, name: string): string {
+  const m = String(v).trim().match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
+  if (!m || +m[1] > 23 || +m[2] > 59) throw new ToolInputError(`${name} בפורמט HH:MM`);
+  return `${m[1].padStart(2, "0")}:${m[2]}`;
 }
 
 /** "YYYY-MM-DD HH:MM" בשעון המקומי → ISO ב-UTC */

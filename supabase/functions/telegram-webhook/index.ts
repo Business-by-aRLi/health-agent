@@ -13,6 +13,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { serviceClient } from "../_shared/supabase.ts";
+import { anthropicClient } from "../_shared/anthropic.ts";
 import { json } from "../_shared/http.ts";
 import { answerCallback, clearKeyboard, downloadFile, sendMessage, sendTyping, setWebhook, type TgUpdate, webhookSecret } from "../_shared/telegram.ts";
 import { localDate } from "../_shared/time.ts";
@@ -24,10 +25,7 @@ import { prepareHistory } from "../_shared/agent/history.ts";
 
 declare const EdgeRuntime: { waitUntil(p: Promise<unknown>): void };
 
-// ANTHROPIC_API_KEY מה-secrets של Supabase. מפתח שלא משויך ל-workspace מחייב גם את
-// ה-header של ה-workspace, ולכן אם הוגדר ANTHROPIC_WORKSPACE_ID הוא נשלח בכל בקשה.
-const workspaceId = Deno.env.get("ANTHROPIC_WORKSPACE_ID");
-const anthropic = new Anthropic(workspaceId ? { defaultHeaders: { "anthropic-workspace-id": workspaceId } } : {});
+const anthropic = anthropicClient();
 
 const HISTORY_MESSAGES = 16;      // כמה הודעות קודמות נכנסות כהיסטוריה
 const HISTORY_HOURS = 72;         // ורק מה-72 שעות האחרונות
