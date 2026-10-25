@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Health Agent Sync</string>
+    <string name="intro">האפליקציה קוראת נתונים מ-Health Connect (שינה, צעדים, דופק, אימונים, משקל) ושולחת אותם למאמן האישי שלך. היא לא מציגה נתונים ולא כותבת כלום ל-Health Connect.</string>
+    <string name="url_label">כתובת השרת</string>
+    <string name="token_label">טוקן אישי (מתחיל ב-hk_)</string>
+    <string name="save">שמירה</string>
+    <string name="permissions">מתן הרשאות ב-Health Connect</string>
+    <string name="sync_now">סנכרון עכשיו</string>
+    <string name="privacy">איך הנתונים שלך משמשים</string>
+    <string name="saved">נשמר. הסנכרון ירוץ אוטומטית כל 30 דקות.</string>
+    <string name="invalid_settings">צריך כתובת שמתחילה ב-https:// וטוקן שמתחיל ב-hk_</string>
+    <string name="hc_unavailable">Health Connect לא זמין בטלפון הזה</string>
+    <string name="syncing">מסנכרן…</string>
+    <string name="permissions_status">הרשאות קריאה: %1$d מתוך %2$d</string>
+    <string name="no_background">⚠️ אין הרשאת קריאה ברקע: הסנכרון האוטומטי לא יעבוד. כדאי לאשר אותה במסך ההרשאות.</string>
+    <string name="configured">✅ כתובת וטוקן מוגדרים</string>
+    <string name="not_configured">⚠️ עוד לא הוגדרו כתובת וטוקן</string>
+    <string name="privacy_text">Health Agent Sync קוראת מ-Health Connect רק את סוגי הנתונים שאישרת: צעדים, מרחק, קלוריות, דופק, דופק במנוחה, HRV, שינה, אימונים, משקל, אחוז שומן, רוויון חמצן, קצב נשימה ו-VO2 Max.\n\nהנתונים נשלחים בחיבור מוצפן (HTTPS) רק לשרת שהגדרת, עם טוקן אישי שמזהה אותך. הם משמשים את המאמן האישי שלך כדי לענות לשאלות שלך ולתת המלצות. האפליקציה לא שולחת נתונים לשום גורם אחר, לא מציגה פרסומות ולא כותבת ל-Health Connect.\n\nאפשר לבטל את ההרשאות בכל רגע בהגדרות של Health Connect, ולמחוק את האפליקציה. בקשה למחיקת הנתונים מהשרת: דרך מי שנתנה לך את הטוקן.</string>
+</resources>
