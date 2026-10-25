@@ -453,3 +453,27 @@ Deno.test("מה שלומך היום: רק למי ששקט עד הצהריים, �
   // ב-10:40 תזכורת בוקר קודמת; ה-check-in לא נשלח באותה ריצה עם תזכורת אחרת
   assertEquals(kinds({ mealTrackingActive: true, now: new Date(at("10:40")) }), ["meal_reminder:2026-11-03:breakfast"]);
 });
+
+Deno.test("loop: קריאה לכלי שנכתבה כטקסט → בקשה אחת לבצע באמת, וה-XML לא מגיע למשתמש", async () => {
+  const leaked = 'רשמתי. כל הכבוד!\n\n<invoke name="remember">\n<parameter name="category">insight</parameter>\n</invoke>';
+  const ran: string[] = [];
+  const { client, requests } = fakeClient([
+    { stop_reason: "end_turn", content: [text(leaked)] as Msg["content"] },
+    { stop_reason: "tool_use", content: [toolUse("t1", "remember", { category: "insight" })] as Msg["content"] },
+    { stop_reason: "end_turn", content: [text("רשמתי. כל הכבוד!")] as Msg["content"] },
+  ]);
+  const r = await runAgent({ client, history: [], userText: "x", context: "<context/>", runTool: (n) => (ran.push(n), Promise.resolve({ ok: true })) });
+  assertEquals(ran, ["remember"]);
+  assertEquals(r.text, "רשמתי. כל הכבוד!");
+  const fix = (requests[1].messages as Array<{ content: unknown }>).at(-1)!.content as string;
+  assert(fix.includes("לא בוצעו"));
+
+  // אם זה חוזר גם אחרי הבקשה: לא שולחים XML
+  const again = fakeClient([
+    { stop_reason: "end_turn", content: [text(leaked)] as Msg["content"] },
+    { stop_reason: "end_turn", content: [text(leaked)] as Msg["content"] },
+  ]);
+  const r2 = await runAgent({ client: again.client, history: [], userText: "x", context: "", runTool: () => Promise.resolve({}) });
+  assertEquals(r2.text, "רשמתי. כל הכבוד!");
+  assertEquals(again.requests.length, 2);
+});

@@ -20,6 +20,24 @@ type ToolResult = Anthropic.Beta.Messages.BetaToolResultBlockParam;
 export const DEFAULT_MODEL = "claude-opus-5-5";
 const MAX_ITERATIONS = 10;
 
+// 🧠 לפעמים המודל "כותב" קריאה לכלי כטקסט (תגיות invoke/parameter) במקום לקרוא לו באמת.
+//    אז שום דבר לא נרשם, והמשתמש רואה XML ו"רשמתי" שלא קרה. מזהים את זה, ומבקשים פעם
+//    אחת לבצע את הקריאות כקריאות אמיתיות. אם זה חוזר, לפחות לא מציגים את ה-XML.
+const PSEUDO_TOOL_CALL = /<\/?(?:antml:)?(?:function_calls|invoke|parameter)\b/;
+const PSEUDO_TOOL_FIX =
+  "[הודעת מערכת, לא מהמשתמש] בתשובה האחרונה כתבת קריאות לכלים כטקסט (תגיות invoke/parameter), ולכן הן לא בוצעו ושום דבר לא נרשם. " +
+  "בצע עכשיו את הקריאות הנחוצות באמצעות הכלים עצמם, ואחר כך כתוב שוב את התשובה המלאה למשתמש, בלי שום תגיות.";
+
+export function hasPseudoToolCall(text: string): boolean {
+  return PSEUDO_TOOL_CALL.test(text);
+}
+
+/** חותך את התשובה לפני תחילת ה-XML שדלף, כדי שלא יגיע לטלגרם */
+export function stripPseudoToolCalls(text: string): string {
+  const m = text.match(PSEUDO_TOOL_CALL);
+  return m ? text.slice(0, m.index).trim() : text;
+}
+
 /** רק החלק של הלקוח שהסוכן צריך. בבדיקות מזריקים לקוח מזויף באותה צורה */
 export type MessagesClient = Pick<Anthropic, "beta">;
 
@@ -62,6 +80,7 @@ export async function runAgent(a: AgentInput): Promise<AgentResult> {
   const usage = { input: 0, output: 0, cache_read: 0, cache_write: 0 };
   let response: Message | null = null;
   let i = 0;
+  let pseudoRetried = false;
 
   for (; i < MAX_ITERATIONS; i++) {
     response = await a.client.beta.messages.create({
@@ -87,7 +106,16 @@ export async function runAgent(a: AgentInput): Promise<AgentResult> {
       messages.push({ role: "assistant", content: response.content });
       continue;
     }
-    if (response.stop_reason !== "tool_use") break;
+    if (response.stop_reason !== "tool_use") {
+      if (!pseudoRetried && response.stop_reason === "end_turn" && hasPseudoToolCall(textOf(response))) {
+        pseudoRetried = true;
+        console.warn("pseudo tool call in text, asking to retry");
+        messages.push({ role: "assistant", content: response.content });
+        messages.push({ role: "user", content: PSEUDO_TOOL_FIX });
+        continue;
+      }
+      break;
+    }
 
     messages.push({ role: "assistant", content: response.content });
     const toolUses = response.content.filter((b) => b.type === "tool_use") as Anthropic.Beta.Messages.BetaToolUseBlock[];
@@ -109,11 +137,7 @@ export async function runAgent(a: AgentInput): Promise<AgentResult> {
     messages.push({ role: "user", content: results });
   }
 
-  const text = (response?.content ?? [])
-    .filter((b) => b.type === "text")
-    .map((b) => (b as Anthropic.Beta.Messages.BetaTextBlock).text)
-    .join("\n")
-    .trim();
+  const text = stripPseudoToolCalls(response ? textOf(response) : "");
 
   return {
     text: response?.stop_reason === "refusal"
@@ -125,4 +149,12 @@ export async function runAgent(a: AgentInput): Promise<AgentResult> {
     stopReason: response?.stop_reason ?? null,
     model: response?.model ?? model,
   };
+}
+
+function textOf(r: Message): string {
+  return r.content
+    .filter((b) => b.type === "text")
+    .map((b) => (b as Anthropic.Beta.Messages.BetaTextBlock).text)
+    .join("\n")
+    .trim();
 }
