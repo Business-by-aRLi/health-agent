@@ -10,6 +10,8 @@ begin
   get diagnostics v_n = row_count;
   assert v_n = 0, 'claim is single';
   insert into public.outbound_notifications (user_id, kind, ref_key) values (v_uid, 'workout_followup', 'x');
+  insert into public.outbound_notifications (user_id, kind, ref_key) values (v_uid, 'daily_checkin', '2026-11-03');
+  insert into public.outbound_notifications (user_id, kind, ref_key) values (v_uid, 'onboarding', 'offer');
   begin
     insert into public.outbound_notifications (user_id, kind, ref_key) values (v_uid, 'spam', 'x');
     assert false, 'kind check';
