@@ -467,8 +467,8 @@ create policy "coach reads permitted clients" on public.workouts
 | `check_interactions(context)` 🆕 | בדיקה מול `interactions.json`: תרופה↔תוסף, תרופה↔מזון, תזמון |
 
 ### בחירת מודל
-- **ברירת מחדל:** Claude Opus 5.5 (`claude-opus-5-5`) עם effort בינוני לשיחה. אפשר להחליף בלי שינוי קוד דרך ה-secret `COACH_MODEL` (למשל `claude-sonnet-5-5`, זול בחצי). את ההחלטה הזו כדאי לקבל אחרי שבוע של שימוש, לפי העלות בפועל (`messages.meta.usage`).
-- **Fallback בצד השרת** (`fallbacks: "default"`): אם מסווג בטיחות דוחה בטעות שאלה לגיטימית (למשל על תרופות), הבקשה רצה מחדש על מודל חלופי.
+- **ברירת מחדל:** Claude Haiku 5.5 (`claude-haiku-5-5`) עם effort בינוני לשיחה. עברנו אליו מ-Opus 5.5 ב-26.10 בגלל עלות: יום עמוס עלה כ-10$ ב-Opus, ובערך פי 40 פחות ב-Haiku. אפשר להחליף בלי שינוי קוד דרך ה-secret `COACH_MODEL` (למשל `claude-sonnet-5-5` או `claude-opus-5-5`). ההיסטוריה נשמרת ב-cache אוטומטי, כך שרק החלק החדש בכל בקשה משולם במחיר מלא.
+- **Fallback בצד השרת** (`fallbacks: "default"`): אם מסווג בטיחות דוחה בטעות שאלה לגיטימית (למשל על תרופות), הבקשה רצה מחדש על מודל חלופי. נשלח רק ל-Opus / Sonnet / Fable. ל-Haiku אין fallback בצד השרת, ודחייה מחזירה הודעה מנומסת.
 - **היסטוריה כטקסט:** בין הודעות נשמר ונשלח רק הטקסט של כל תור. בתוך תור אחד הכול append-only. ככה אפשר לקצר היסטוריה מההתחלה בלי לשבור את בלוקי ה-thinking.
 - **Prompt caching** על ה-system prompt וההקשר הקבוע חוסך עלות משמעותית בשיחות חוזרות.
 

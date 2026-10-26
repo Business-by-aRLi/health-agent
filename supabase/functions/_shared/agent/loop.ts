@@ -17,7 +17,11 @@ type MessageParam = Anthropic.Beta.Messages.BetaMessageParam;
 type Message = Anthropic.Beta.Messages.BetaMessage;
 type ToolResult = Anthropic.Beta.Messages.BetaToolResultBlockParam;
 
-export const DEFAULT_MODEL = "claude-opus-5-5";
+// 🧠 Haiku: זול פי ~40 מ-Opus, ומספיק לשיחת אימון ורישום. אפשר להחליף בלי שינוי קוד דרך COACH_MODEL
+export const DEFAULT_MODEL = "claude-haiku-5-5";
+
+// fallback בצד השרת קיים רק ל-Opus / Sonnet / Fable. ב-Haiku אין, ושליחת הפרמטר שם לא נחוצה
+const supportsFallback = (model: string) => /^claude-(opus|sonnet|fable)-/.test(model);
 const MAX_ITERATIONS = 10;
 
 // 🧠 לפעמים המודל "כותב" קריאה לכלי כטקסט (תגיות invoke/parameter) במקום לקרוא לו באמת.
@@ -88,12 +92,13 @@ export async function runAgent(a: AgentInput): Promise<AgentResult> {
       max_tokens: 16000,
       // system + tools קבועים → נשמרים ב-cache. ה-breakpoint על ה-system מכסה גם את tools (שבאים לפניו)
       system: [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }],
+      // cache אוטומטי גם על ההיסטוריה: בין צעדי הכלים ובין הודעות עוקבות, רק החלק החדש משולם במחיר מלא
+      cache_control: { type: "ephemeral" },
       tools: TOOLS,
       messages,
       output_config: { effort: a.effort ?? "medium" },
       // אם מסווג הבטיחות דוחה בטעות (למשל שאלה על תרופות), הבקשה רצה מחדש על מודל חלופי בצד השרת
-      betas: ["server-side-fallback-2026-07-01"],
-      fallbacks: "default",
+      ...(supportsFallback(model) ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const } : {}),
     });
 
     usage.input += response.usage.input_tokens ?? 0;
