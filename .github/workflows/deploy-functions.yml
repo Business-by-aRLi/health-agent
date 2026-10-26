@@ -48,3 +48,8 @@ jobs:
           for fn in ingest-healthkit telegram-webhook coach-scheduler; do
             supabase functions deploy "$fn" --project-ref "$PROJECT_REF" --use-api
           done
+
+      - name: Deployed versions
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        run: supabase functions list --project-ref "$PROJECT_REF"
