@@ -1,0 +1,18 @@
+# הגדרות הפריסה של ה-Edge Functions (נקראות על ידי supabase CLI ב-GitHub Actions).
+# כל הפונקציות מאמתות בעצמן: טוקן hk_ (קליטה), secret של טלגרם (webhook), secret של המתזמן.
+project_id = "health-agent"
+
+[functions.ingest-healthkit]
+verify_jwt = false
+entrypoint = "./functions/ingest-healthkit/index.ts"
+import_map = "./functions/ingest-healthkit/deno.json"
+
+[functions.telegram-webhook]
+verify_jwt = false
+entrypoint = "./functions/telegram-webhook/index.ts"
+import_map = "./functions/telegram-webhook/deno.json"
+
+[functions.coach-scheduler]
+verify_jwt = false
+entrypoint = "./functions/coach-scheduler/index.ts"
+import_map = "./functions/coach-scheduler/deno.json"

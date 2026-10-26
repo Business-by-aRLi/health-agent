@@ -546,6 +546,9 @@ health-agent/
 
 ---
 
+### 9א. פריסה
+הפונקציות נפרסות מ-GitHub Actions (`.github/workflows/deploy-functions.yml`) בכל push שנוגע ב-`supabase/functions`: קודם typecheck, lint ובדיקות, ואז `supabase functions deploy` לכל אחת משלוש הפונקציות, לפי `supabase/config.toml` (כולן `verify_jwt = false`, כי כל אחת מאמתת בעצמה). הקבצים נקראים ישירות מה-commit, ולכן מה שרץ בשרת זהה למה שב-git. דרוש secret אחד ב-GitHub: `SUPABASE_ACCESS_TOKEN` (Supabase → Account → Access Tokens). מיגרציות עדיין מוחלות בנפרד.
+
 ## 10. מקרי קצה
 
 - **אזורי זמן:** כל הזמנים נשמרים ב-UTC (`timestamptz`). "יום" מחושב לפי `profiles.timezone`. שינה שחוצה חצות משויכת ליום ההתעוררות. גם בנסיעה לחו"ל ה-timezone נשאר כפי שהוגדר, אלא אם משנים אותו.
