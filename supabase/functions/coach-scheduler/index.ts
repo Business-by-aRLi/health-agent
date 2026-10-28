@@ -16,7 +16,7 @@ import { json } from "../_shared/http.ts";
 import { sendMessage } from "../_shared/telegram.ts";
 import { localDate } from "../_shared/time.ts";
 import { buildContext, loadProfile } from "../_shared/agent/context.ts";
-import { DEFAULT_MODEL, runAgent } from "../_shared/agent/loop.ts";
+import { runAgent, SCHEDULER_MODEL } from "../_shared/agent/loop.ts";
 import { executeTool, localDayBounds } from "../_shared/agent/tools.ts";
 import { prepareHistory } from "../_shared/agent/history.ts";
 import { loadIntake } from "../_shared/agent/intake.ts";
@@ -187,7 +187,7 @@ async function compose(db: SupabaseClient, userId: string, r: DueReminder, now: 
     history: prepareHistory(data ?? []),
     userText: trigger(r),
     context: await buildContext(db, profile, now),
-    model: Deno.env.get("COACH_MODEL") ?? DEFAULT_MODEL,
+    model: Deno.env.get("SCHEDULER_MODEL") ?? SCHEDULER_MODEL,
     effort: "low",
     runTool: (name, input) => executeTool(name, input, { db, userId, timezone: profile.timezone }),
   });

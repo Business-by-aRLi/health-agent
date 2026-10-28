@@ -56,15 +56,15 @@ Deno.test("loop: tool_use → הרצת כלים במקביל → תשובה", as
 
   // בקשה ראשונה: היסטוריה + context בתוך הודעת המשתמש, system קבוע עם cache_control
   const first = requests[0];
-  assertEquals(first.model, "claude-haiku-5-5");
+  assertEquals(first.model, "claude-sonnet-5-5");
   assertEquals((first.messages as unknown[]).length, 3);
   assertEquals((first.messages as Array<{ content: string }>)[2].content, "<context>x</context>\n\nאיך ישנתי?");
   assertEquals((first.system as Array<{ text: string; cache_control: unknown }>)[0].text, SYSTEM_PROMPT);
-  assertEquals(first.fallbacks, undefined, "ל-Haiku אין fallback בצד השרת");
-  assertEquals(first.cache_control, { type: "ephemeral" });
-  const opus = fakeClient([{ content: [text("x")] as Msg["content"] }]);
-  await runAgent({ client: opus.client, history: [], userText: "x", context: "", runTool: () => Promise.resolve({}), model: "claude-opus-5-5" });
-  assertEquals(opus.requests[0].fallbacks, "default");
+  assertEquals(first.fallbacks, "default");
+  assertEquals(first.cache_control, { type: "ephemeral", ttl: "1h" });
+  const haiku = fakeClient([{ content: [text("x")] as Msg["content"] }]);
+  await runAgent({ client: haiku.client, history: [], userText: "x", context: "", runTool: () => Promise.resolve({}), model: "claude-haiku-5-5" });
+  assertEquals(haiku.requests[0].fallbacks, undefined, "ל-Haiku אין fallback בצד השרת");
   assertEquals(first.output_config, { effort: "medium" });
 
   // בקשה שנייה: append-only. התור של המודל (כולל thinking) נשמר כמו שהוא, ושתי התוצאות בהודעה אחת

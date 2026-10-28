@@ -17,8 +17,10 @@ type MessageParam = Anthropic.Beta.Messages.BetaMessageParam;
 type Message = Anthropic.Beta.Messages.BetaMessage;
 type ToolResult = Anthropic.Beta.Messages.BetaToolResultBlockParam;
 
-// 🧠 Haiku: זול פי ~40 מ-Opus, ומספיק לשיחת אימון ורישום. אפשר להחליף בלי שינוי קוד דרך COACH_MODEL
-export const DEFAULT_MODEL = "claude-haiku-5-5";
+// 🧠 שיחה: Sonnet (קרוב ל-Opus באיכות ובחום, בחצי מחיר; Haiku לא הספיק). הודעות יזומות קצרות
+//    (תזכורות, "מה שלומך"): Haiku, פי 20 זול יותר. אפשר להחליף בלי שינוי קוד: COACH_MODEL / SCHEDULER_MODEL
+export const DEFAULT_MODEL = "claude-sonnet-5-5";
+export const SCHEDULER_MODEL = "claude-haiku-5-5";
 
 // fallback בצד השרת קיים רק ל-Opus / Sonnet / Fable. ב-Haiku אין, ושליחת הפרמטר שם לא נחוצה
 const supportsFallback = (model: string) => /^claude-(opus|sonnet|fable)-/.test(model);
@@ -91,9 +93,10 @@ export async function runAgent(a: AgentInput): Promise<AgentResult> {
       model,
       max_tokens: 16000,
       // system + tools קבועים → נשמרים ב-cache. ה-breakpoint על ה-system מכסה גם את tools (שבאים לפניו)
-      system: [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }],
+      // ttl של שעה: הודעות באותה שעה קוראות מה-cache (10% מהמחיר) במקום לכתוב אותו מחדש כל 5 דקות
+      system: [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral", ttl: "1h" } }],
       // cache אוטומטי גם על ההיסטוריה: בין צעדי הכלים ובין הודעות עוקבות, רק החלק החדש משולם במחיר מלא
-      cache_control: { type: "ephemeral" },
+      cache_control: { type: "ephemeral", ttl: "1h" },
       tools: TOOLS,
       messages,
       output_config: { effort: a.effort ?? "medium" },
