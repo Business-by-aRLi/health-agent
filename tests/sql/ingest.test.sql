@@ -79,17 +79,43 @@ begin
          'RPE survives re-ingest';
 end $$;
 
--- ----------------------------------------- sleep segments format replaces night
+-- ----------------------------------------- sleep segments format
+-- (הלילה בפורמט המקטעים מתחיל אחרי זה שכבר נקלט ונגמר לפניו, וזה בדיוק "חיתוך" שלא דורס,
+--  ולכן מנקים קודם. הדריסה עצמה נבדקת למטה)
 do $$
 declare v_src uuid := (select v::uuid from t_ctx where k = 'source');
         v_uid uuid := (select v::uuid from t_ctx where k = 'uid');
 begin
   perform public.ingest_canonical_batch(v_src, (select b2 from t_batch));
-  assert (select count(*) from public.sleep_sessions) = 1, 'same night, same source → upsert';
+  assert (select total_asleep_min from public.sleep_sessions) = 423, 'contained later-start version does not overwrite';
+  delete from public.sleep_sessions;
+  perform public.ingest_canonical_batch(v_src, (select b2 from t_batch));
+  assert (select count(*) from public.sleep_sessions) = 1, 'one night';
   assert (select total_asleep_min from public.sleep_sessions) = 405, 'segments total';
   assert jsonb_array_length((select stages from public.sleep_sessions)) = 5, 'stages kept';
   assert (select sleep_min from public.daily_summaries where user_id = v_uid and day = '2026-10-22') = 405,
          'summary recomputed';
+end $$;
+
+-- ------------------------- rolling-window truncation does not shrink the night
+do $$
+declare v_src uuid := (select v::uuid from t_ctx where k = 'source');
+        v_before numeric := (select total_asleep_min from public.sleep_sessions);
+        v_row public.sleep_sessions := (select s from public.sleep_sessions s);
+begin
+  -- אותו לילה, מתחיל שעתיים אחרי ונגמר באותה שעה, 60 דקות: חיתוך של HAE, נשאר הלילה המלא
+  perform public.ingest_canonical_batch(v_src, jsonb_build_object('sleep', jsonb_build_array(jsonb_build_object(
+    'sleep_date', v_row.sleep_date, 'asleep_start', v_row.asleep_start + interval '2 hours', 'asleep_end', v_row.asleep_end,
+    'in_bed_start', v_row.asleep_start + interval '2 hours', 'in_bed_end', v_row.asleep_end, 'total_asleep_min', 60))));
+  assert (select total_asleep_min from public.sleep_sessions) = v_before, 'truncated window ignored';
+  -- נתון שהגיע באיחור ומאריך את הלילה (סוף מאוחר יותר) כן מעדכן
+  perform public.ingest_canonical_batch(v_src, jsonb_build_object('sleep', jsonb_build_array(jsonb_build_object(
+    'sleep_date', v_row.sleep_date, 'asleep_start', v_row.asleep_start, 'asleep_end', v_row.asleep_end + interval '30 minutes',
+    'in_bed_start', v_row.asleep_start, 'in_bed_end', v_row.asleep_end + interval '30 minutes', 'total_asleep_min', v_before + 30))));
+  assert (select total_asleep_min from public.sleep_sessions) = v_before + 30, 'later data extends';
+  -- מחזירים למצב הקודם בשביל הבדיקות הבאות
+  delete from public.sleep_sessions;
+  perform public.ingest_canonical_batch(v_src, (select b2 from t_batch));
 end $$;
 
 -- --------------------------------------------- timezone day boundary
