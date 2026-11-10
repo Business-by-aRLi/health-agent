@@ -46,7 +46,7 @@ jobs:
             exit 1
           fi
           for fn in ingest-healthkit telegram-webhook coach-scheduler; do
-            supabase functions deploy "$fn" --project-ref "$PROJECT_REF" --use-api
+            supabase functions deploy "$fn" --project-ref "$PROJECT_REF" --use-api --yes
           done
 
       - name: Deployed versions
