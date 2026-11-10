@@ -481,19 +481,3 @@ Deno.test("loop: קריאה לכלי שנכתבה כטקסט → בקשה אחת
   assertEquals(r2.text, "רשמתי. כל הכבוד!");
   assertEquals(again.requests.length, 2);
 });
-
-Deno.test("ייצוא שיחה: זמן מקומי, מי כתב, יזומה, פעולות, שיחה חדשה", async () => {
-  const { formatTranscript } = await import("../../supabase/functions/_shared/agent/export.ts");
-  const md = formatTranscript([
-    { role: "user", content: "אכלתי חביתה", created_at: "2026-11-03T06:05:00Z", input_kind: "voice", meta: {} },
-    { role: "assistant", content: "רשמתי 🍳", created_at: "2026-11-03T06:05:10Z", meta: { tools: [{ name: "log_meal", ok: true }, { name: "remember", ok: false }] } },
-    { role: "marker", content: "new conversation", created_at: "2026-11-03T08:00:00Z" },
-    { role: "assistant", content: "היי, מה שלומך היום?", created_at: "2026-11-03T10:00:00Z", meta: { proactive: "daily_checkin" } },
-  ], "Asia/Jerusalem", "ריקי", new Date("2026-11-03T12:00:00Z"));
-  assert(md.startsWith("# שיחה עם המאמן: ריקי"));
-  assert(md.includes("3 הודעות"));
-  assert(md.includes("[03.11.2026 08:05] משתמש/ת** *(הודעה קולית, תומללה)*"), md);
-  assert(md.includes("*פעולות: log_meal, remember (נכשל)*"));
-  assert(md.includes("*(התחלה של שיחה חדשה)*"));
-  assert(md.includes("[03.11.2026 12:00] המאמן** *(יזומה: daily_checkin)*"));
-});

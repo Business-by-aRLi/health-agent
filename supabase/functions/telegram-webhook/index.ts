@@ -15,14 +15,13 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { serviceClient } from "../_shared/supabase.ts";
 import { anthropicClient } from "../_shared/anthropic.ts";
 import { json } from "../_shared/http.ts";
-import { answerCallback, clearKeyboard, downloadFile, sendDocument, sendMessage, sendTyping, setWebhook, type TgUpdate, webhookSecret } from "../_shared/telegram.ts";
+import { answerCallback, clearKeyboard, downloadFile, sendMessage, sendTyping, setWebhook, type TgUpdate, webhookSecret } from "../_shared/telegram.ts";
 import { localDate } from "../_shared/time.ts";
 import { transcribe } from "../_shared/transcribe.ts";
 import { buildContext, loadProfile } from "../_shared/agent/context.ts";
 import { DEFAULT_MODEL, runAgent } from "../_shared/agent/loop.ts";
 import { executeTool } from "../_shared/agent/tools.ts";
 import { prepareHistory } from "../_shared/agent/history.ts";
-import { type ExportRow, formatTranscript } from "../_shared/agent/export.ts";
 import { OFFER_TEXT, onboardingKeyboard } from "../_shared/agent/onboarding.ts";
 
 declare const EdgeRuntime: { waitUntil(p: Promise<unknown>): void };
@@ -42,8 +41,7 @@ const HELP = `אני המאמן האישי שלך 💪
 • 📸 תמונה של הארוחה (או תיאור במילים), ואני מעריך קלוריות וחלבון מול התוכנית שלך
 • היה לי התקף מיגרנה הבוקר, עוצמה 6 (אני רושם ביומן ומחפש דפוסים)
 
-/new: מתחילים שיחה חדשה (הזיכרון לטווח ארוך נשמר)
-/export: קובץ עם כל השיחה (אפשר /export 7 לשבוע האחרון)`;
+/new: מתחילים שיחה חדשה (הזיכרון לטווח ארוך נשמר)`;
 
 Deno.serve(async (req) => {
   const path = new URL(req.url).pathname;
@@ -118,10 +116,6 @@ async function handleUpdate(db: SupabaseClient, update: TgUpdate): Promise<void>
 
   if (text === "/help") {
     await sendMessage(chatId, HELP);
-    return;
-  }
-  if (text === "/export" || text.startsWith("/export ")) {
-    await exportChat(db, userId, chatId, Number(text.split(/\s+/)[1]) || null);
     return;
   }
   if (text === "/new") {
@@ -301,31 +295,6 @@ async function handleCallback(db: SupabaseClient, cb: NonNullable<TgUpdate["call
     { user_id: userId, role: "user", content: action === "approve" ? "[לחצתי על אישור התוכנית]" : "[לחצתי על 'לא עכשיו' לתוכנית]", input_kind: "text" },
     { user_id: userId, role: "assistant", content: text, telegram_message_id: tgId },
   ]);
-}
-
-// ---------------------------------------------------------------------------
-// /export: כל השיחה (או N הימים האחרונים) כקובץ Markdown
-// ---------------------------------------------------------------------------
-async function exportChat(db: SupabaseClient, userId: string, chatId: number, days: number | null): Promise<void> {
-  const profile = await loadProfile(db, userId);
-  const since = days && days > 0 ? new Date(Date.now() - days * 86_400_000).toISOString() : "1970-01-01T00:00:00Z";
-  const rows: ExportRow[] = [];
-  // PostgREST מחזיר עד 1000 שורות לבקשה, לכן בדפים
-  for (let from = 0; ; from += 1000) {
-    const { data, error } = await db.from("messages").select("role, content, created_at, input_kind, meta")
-      .eq("user_id", userId).gte("created_at", since).order("id").range(from, from + 999);
-    if (error) throw error;
-    rows.push(...((data ?? []) as ExportRow[]));
-    if (!data || data.length < 1000) break;
-  }
-  if (!rows.some((r) => r.role !== "marker")) {
-    await sendMessage(chatId, "אין עדיין הודעות לייצא בטווח הזה.");
-    return;
-  }
-  const md = formatTranscript(rows, profile.timezone, profile.display_name);
-  const day = new Date().toISOString().slice(0, 10);
-  await sendDocument(chatId, `coach-chat-${day}.md`, md,
-    days ? `השיחה מ-${days} הימים האחרונים` : "כל השיחה עד עכשיו. יש בה מידע אישי ורפואי, כדאי לשתף בזהירות.");
 }
 
 // ---------------------------------------------------------------------------
