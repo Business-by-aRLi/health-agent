@@ -188,6 +188,7 @@ async function compose(db: SupabaseClient, userId: string, r: DueReminder, now: 
     userText: trigger(r),
     context: await buildContext(db, profile, now),
     model: Deno.env.get("SCHEDULER_MODEL") ?? SCHEDULER_MODEL,
+    cacheKey: `${userId}:scheduler`,
     effort: "low",
     runTool: (name, input) => executeTool(name, input, { db, userId, timezone: profile.timezone }),
   });

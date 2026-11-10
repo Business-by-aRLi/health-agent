@@ -223,6 +223,7 @@ async function agentTurn(db: SupabaseClient, a: {
       images: a.images,
       context,
       model: Deno.env.get("COACH_MODEL") ?? DEFAULT_MODEL,
+      cacheKey: a.userId,
       runTool: (name, input) => executeTool(name, input, {
         db, userId, timezone: profile.timezone, messageId: a.savedId, mediaPath: a.mediaPath ?? null, inputKind: a.inputKind ?? "text", effects,
       }),

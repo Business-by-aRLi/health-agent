@@ -9,6 +9,7 @@ import { splitMessage } from "../../supabase/functions/_shared/telegram.ts";
 import { SYSTEM_PROMPT } from "../../supabase/functions/_shared/agent/system-prompt.ts";
 
 type Msg = Anthropic.Beta.Messages.BetaMessage;
+const CLAUDE = "claude-sonnet-5-5";
 
 /** לקוח מזויף: מחזיר תשובות מוכנות לפי הסדר, ושומר את הבקשות לבדיקה */
 function fakeClient(responses: Array<Partial<Msg>>) {
@@ -43,7 +44,7 @@ Deno.test("loop: tool_use → הרצת כלים במקביל → תשובה", as
     { stop_reason: "end_turn", content: [text("ישנת בממוצע 6:20 השבוע.")] as Msg["content"] },
   ]);
   const ran: string[] = [];
-  const res = await runAgent({
+  const res = await runAgent({ model: CLAUDE,
     client, history: [{ role: "user", content: "היי" }, { role: "assistant", content: "שלום!" }],
     userText: "איך ישנתי?", context: "<context>x</context>",
     runTool: (name) => { ran.push(name); return Promise.resolve({ ok: true }); },
@@ -80,7 +81,7 @@ Deno.test("loop: שגיאת קלט חוזרת למודל כ-is_error, שגיאה
     { stop_reason: "tool_use", content: [toolUse("a", "get_sleep", {}), toolUse("b", "get_workouts", {})] as Msg["content"] },
     { stop_reason: "end_turn", content: [text("אין לי נתונים.")] as Msg["content"] },
   ]);
-  const res = await runAgent({
+  const res = await runAgent({ model: CLAUDE,
     client, history: [], userText: "?", context: "",
     runTool: (name) => name === "get_sleep" ? Promise.reject(new ToolInputError("טווח לא תקין")) : Promise.reject(new Error("db down: secret details")),
   });
@@ -92,7 +93,7 @@ Deno.test("loop: שגיאת קלט חוזרת למודל כ-is_error, שגיאה
 
 Deno.test("loop: refusal → הודעה מנומסת, לא טקסט ריק", async () => {
   const { client } = fakeClient([{ stop_reason: "refusal", content: [] }]);
-  const res = await runAgent({ client, history: [], userText: "?", context: "", runTool: () => Promise.resolve(null) });
+  const res = await runAgent({ model: CLAUDE, client, history: [], userText: "?", context: "", runTool: () => Promise.resolve(null) });
   assert(res.text.includes("לא הצלחתי"));
   assertEquals(res.stopReason, "refusal");
 });
@@ -100,7 +101,7 @@ Deno.test("loop: refusal → הודעה מנומסת, לא טקסט ריק", asy
 Deno.test("loop: עצירה אחרי מספר צעדים מקסימלי", async () => {
   const loopForever = Array.from({ length: 12 }, (_, i) => ({ stop_reason: "tool_use", content: [toolUse(`t${i}`, "get_sleep", {})] as Msg["content"] }));
   const { client, requests } = fakeClient(loopForever as Array<Partial<Msg>>);
-  const res = await runAgent({ client, history: [], userText: "?", context: "", runTool: () => Promise.resolve({}) });
+  const res = await runAgent({ model: CLAUDE, client, history: [], userText: "?", context: "", runTool: () => Promise.resolve({}) });
   assertEquals(requests.length, 10);
   assert(res.text.length > 0);
 });
@@ -304,7 +305,7 @@ Deno.test("תזונה: הערכת הוצאה אנרגטית ואזהרות על 
 
 Deno.test("loop: תמונה נשלחת כבלוק image לפני הטקסט", async () => {
   const { client, requests } = fakeClient([{ stop_reason: "end_turn", content: [text("נראה כמו שקשוקה")] as Msg["content"] }]);
-  await runAgent({
+  await runAgent({ model: CLAUDE,
     client, history: [], userText: "ארוחת בוקר", context: "<context/>",
     images: [{ media_type: "image/jpeg", data: "AAAA" }],
     runTool: () => Promise.resolve({}),
@@ -466,7 +467,7 @@ Deno.test("loop: קריאה לכלי שנכתבה כטקסט → בקשה אחת
     { stop_reason: "tool_use", content: [toolUse("t1", "remember", { category: "insight" })] as Msg["content"] },
     { stop_reason: "end_turn", content: [text("רשמתי. כל הכבוד!")] as Msg["content"] },
   ]);
-  const r = await runAgent({ client, history: [], userText: "x", context: "<context/>", runTool: (n) => (ran.push(n), Promise.resolve({ ok: true })) });
+  const r = await runAgent({ model: CLAUDE, client, history: [], userText: "x", context: "<context/>", runTool: (n) => (ran.push(n), Promise.resolve({ ok: true })) });
   assertEquals(ran, ["remember"]);
   assertEquals(r.text, "רשמתי. כל הכבוד!");
   const fix = (requests[1].messages as Array<{ content: unknown }>).at(-1)!.content as string;
@@ -477,7 +478,92 @@ Deno.test("loop: קריאה לכלי שנכתבה כטקסט → בקשה אחת
     { stop_reason: "end_turn", content: [text(leaked)] as Msg["content"] },
     { stop_reason: "end_turn", content: [text(leaked)] as Msg["content"] },
   ]);
-  const r2 = await runAgent({ client: again.client, history: [], userText: "x", context: "", runTool: () => Promise.resolve({}) });
+  const r2 = await runAgent({ model: CLAUDE, client: again.client, history: [], userText: "x", context: "", runTool: () => Promise.resolve({}) });
   assertEquals(r2.text, "רשמתי. כל הכבוד!");
   assertEquals(again.requests.length, 2);
+});
+
+/** fetch מזויף ל-OpenAI: מחזיר תשובות מוכנות לפי הסדר, ושומר את גוף הבקשות */
+function fakeOpenAI(outputs: Array<Record<string, unknown>[]>, extra: Record<string, unknown> = {}) {
+  const bodies: Array<Record<string, unknown>> = [];
+  let i = 0;
+  const f = ((_url: string, init: RequestInit) => {
+    bodies.push(JSON.parse(String(init.body)));
+    const output = outputs[i++];
+    return Promise.resolve(new Response(JSON.stringify({
+      id: `resp_${i}`, model: "gpt-6.1-sol", status: "completed", output,
+      usage: { input_tokens: 1000, output_tokens: 50, input_tokens_details: { cached_tokens: 800 } }, ...extra,
+    }), { status: 200 }));
+  }) as typeof fetch;
+  return { f, bodies };
+}
+const msg = (t: string) => ({ type: "message", role: "assistant", content: [{ type: "output_text", text: t }] });
+
+Deno.test("GPT: ברירת המחדל, כלים במקביל, reasoning נשמר, תוצאות עם call_id", async () => {
+  const reasoning = { type: "reasoning", id: "rs_1", summary: [], encrypted_content: "enc" };
+  const { f, bodies } = fakeOpenAI([
+    [reasoning, { type: "function_call", id: "fc_1", call_id: "c1", name: "get_sleep", arguments: '{"from":"2026-10-16","to":"2026-10-22"}' },
+      { type: "function_call", id: "fc_2", call_id: "c2", name: "get_daily_summaries", arguments: "not json" }],
+    [msg("ישנת בממוצע 6:20.")],
+  ]);
+  const ran: string[] = [];
+  const res = await runAgent({
+    history: [{ role: "user", content: "היי" }, { role: "assistant", content: "שלום!" }],
+    userText: "איך ישנתי?", context: "<context>x</context>", fetch: f, cacheKey: "u1",
+    images: [{ media_type: "image/jpeg", data: "AAAA" }],
+    runTool: (n) => (ran.push(n), Promise.resolve({ ok: true })),
+  });
+
+  assertEquals(res.text, "ישנת בממוצע 6:20.");
+  assertEquals(ran, ["get_sleep"]);
+  assertEquals([...res.toolCalls].sort((x, y) => x.name.localeCompare(y.name)), [{ name: "get_daily_summaries", ok: false }, { name: "get_sleep", ok: true }]);
+  assertEquals(res.usage, { input: 400, output: 100, cache_read: 1600, cache_write: 0 });
+
+  const first = bodies[0];
+  assertEquals(first.model, "gpt-6.1-sol");
+  assertEquals(first.instructions, SYSTEM_PROMPT);
+  assertEquals(first.store, false);
+  assertEquals(first.prompt_cache_key, "u1");
+  assertEquals(first.reasoning, { effort: "medium" });
+  const input = first.input as Array<{ role: string; content: unknown }>;
+  assertEquals(input.length, 3);
+  const last = input[2].content as Array<Record<string, string>>;
+  assertEquals(last[0], { type: "input_image", image_url: "data:image/jpeg;base64,AAAA" });
+  assertEquals(last[1].text, "<context>x</context>\n\nאיך ישנתי?");
+  const tools = first.tools as Array<Record<string, unknown>>;
+  assertEquals(tools.length, TOOLS.length);
+  assert(tools.every((t) => t.type === "function" && typeof t.parameters === "object"));
+
+  // בקשה שנייה: ה-output (כולל reasoning) חוזר כמו שהוא, ואחריו שתי התוצאות
+  const second = bodies[1].input as Array<Record<string, unknown>>;
+  assertEquals(second.slice(3, 6), [reasoning, ...((bodies.length && [
+    { type: "function_call", id: "fc_1", call_id: "c1", name: "get_sleep", arguments: '{"from":"2026-10-16","to":"2026-10-22"}' },
+    { type: "function_call", id: "fc_2", call_id: "c2", name: "get_daily_summaries", arguments: "not json" },
+  ]) as Array<Record<string, unknown>>)]);
+  assertEquals(second[6], { type: "function_call_output", call_id: "c1", output: '{"ok":true}' });
+  assertEquals(second[7].call_id, "c2");
+});
+
+Deno.test("GPT: סירוב, XML שדלף, ו-Claude נשאר זמין לפי שם המודל", async () => {
+  const refusal = fakeOpenAI([[{ type: "message", role: "assistant", content: [{ type: "refusal", refusal: "no" }] }]]);
+  const r = await runAgent({ history: [], userText: "x", context: "", fetch: refusal.f, runTool: () => Promise.resolve({}) });
+  assertEquals(r.stopReason, "refusal");
+  assert(r.text.includes("לא הצלחתי לענות"));
+
+  const leak = fakeOpenAI([[msg('רשמתי.\n<invoke name="remember">')], [msg("רשמתי.")]]);
+  const r2 = await runAgent({ history: [], userText: "x", context: "", fetch: leak.f, runTool: () => Promise.resolve({}) });
+  assertEquals(r2.text, "רשמתי.");
+  assertEquals(leak.bodies.length, 2);
+
+  const { client, requests } = fakeClient([{ content: [text("שלום")] as Msg["content"] }]);
+  await runAgent({ client, history: [], userText: "x", context: "", model: "claude-sonnet-5-5", runTool: () => Promise.resolve({}) });
+  assertEquals(requests.length, 1, "claude-* עדיין רץ מול Anthropic");
+});
+
+Deno.test("GPT: שגיאת API של OpenAI → התשובה יוצאת מ-Claude", async () => {
+  const bad = (() => Promise.resolve(new Response(JSON.stringify({ error: { message: "model not found" } }), { status: 404 }))) as typeof fetch;
+  const { client, requests } = fakeClient([{ content: [text("שלום מ-Claude")] as Msg["content"] }]);
+  const r = await runAgent({ client, fetch: bad, history: [], userText: "x", context: "", runTool: () => Promise.resolve({}) });
+  assertEquals(r.text, "שלום מ-Claude");
+  assertEquals(requests[0].model, "claude-sonnet-5-5");
 });

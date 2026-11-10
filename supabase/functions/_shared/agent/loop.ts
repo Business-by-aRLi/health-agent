@@ -12,15 +12,21 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { SYSTEM_PROMPT } from "./system-prompt.ts";
 import { TOOLS, ToolInputError } from "./tools.ts";
+import { OpenAIError, runOpenAIAgent } from "./openai.ts";
+import { anthropicClient } from "../anthropic.ts";
 
 type MessageParam = Anthropic.Beta.Messages.BetaMessageParam;
 type Message = Anthropic.Beta.Messages.BetaMessage;
 type ToolResult = Anthropic.Beta.Messages.BetaToolResultBlockParam;
 
-// 🧠 שיחה: Sonnet (קרוב ל-Opus באיכות ובחום, בחצי מחיר; Haiku לא הספיק). הודעות יזומות קצרות
-//    (תזכורות, "מה שלומך"): Haiku, פי 20 זול יותר. אפשר להחליף בלי שינוי קוד: COACH_MODEL / SCHEDULER_MODEL
-export const DEFAULT_MODEL = "claude-sonnet-5-5";
-export const SCHEDULER_MODEL = "claude-haiku-5-5";
+// 🧠 המודל: GPT של OpenAI (לבקשתך, 10.11). שיחה: gpt-6.1-sol, המודל המאוזן בין איכות למחיר.
+//    הודעות יזומות קצרות (תזכורות, "מה שלומך"): gpt-6-luna, פי 20 זול יותר.
+//    Claude נשאר זמין: COACH_MODEL / SCHEDULER_MODEL עם שם של מודל claude-* מחזירים אותו, בלי שינוי קוד.
+export const DEFAULT_MODEL = "gpt-6.1-sol";
+export const SCHEDULER_MODEL = "gpt-6-luna";
+
+/** gpt-* / o3 וכו' רצים מול OpenAI, claude-* מול Anthropic */
+export const isOpenAIModel = (model: string) => /^(gpt-|o\d)/.test(model);
 
 // fallback בצד השרת קיים רק ל-Opus / Sonnet / Fable. ב-Haiku אין, ושליחת הפרמטר שם לא נחוצה
 const supportsFallback = (model: string) => /^claude-(opus|sonnet|fable)-/.test(model);
@@ -30,7 +36,7 @@ const MAX_ITERATIONS = 10;
 //    אז שום דבר לא נרשם, והמשתמש רואה XML ו"רשמתי" שלא קרה. מזהים את זה, ומבקשים פעם
 //    אחת לבצע את הקריאות כקריאות אמיתיות. אם זה חוזר, לפחות לא מציגים את ה-XML.
 const PSEUDO_TOOL_CALL = /<\/?(?:antml:)?(?:function_calls|invoke|parameter)\b/;
-const PSEUDO_TOOL_FIX =
+export const PSEUDO_TOOL_FIX =
   "[הודעת מערכת, לא מהמשתמש] בתשובה האחרונה כתבת קריאות לכלים כטקסט (תגיות invoke/parameter), ולכן הן לא בוצעו ושום דבר לא נרשם. " +
   "בצע עכשיו את הקריאות הנחוצות באמצעות הכלים עצמם, ואחר כך כתוב שוב את התשובה המלאה למשתמש, בלי שום תגיות.";
 
@@ -48,7 +54,7 @@ export function stripPseudoToolCalls(text: string): string {
 export type MessagesClient = Pick<Anthropic, "beta">;
 
 export interface AgentInput {
-  client: MessagesClient;
+  client?: MessagesClient;             // Claude בלבד; בלי לקוח נוצר אחד לפי ה-secrets
   history: Array<{ role: "user" | "assistant"; content: string }>;
   userText: string;
   context: string;
@@ -56,6 +62,8 @@ export interface AgentInput {
   images?: Array<{ media_type: "image/jpeg" | "image/png" | "image/webp" | "image/gif"; data: string }>; // base64
   model?: string;
   effort?: "low" | "medium" | "high";
+  cacheKey?: string;                   // OpenAI: prompt_cache_key (לפי משתמש), משפר פגיעה ב-cache
+  fetch?: typeof fetch;                // OpenAI: להזרקה בבדיקות
 }
 
 export interface AgentResult {
@@ -67,8 +75,25 @@ export interface AgentResult {
   model: string;
 }
 
+/** אם OpenAI דוחה את הבקשה (מפתח, שם מודל, סכמה), עונים עם Claude במקום להחזיר שגיאה */
+export const FALLBACK_MODEL = "claude-sonnet-5-5";
+
 export async function runAgent(a: AgentInput): Promise<AgentResult> {
   const model = a.model ?? DEFAULT_MODEL;
+  if (!isOpenAIModel(model)) return runClaudeAgent(a, model);
+  try {
+    return await runOpenAIAgent(a, model);
+  } catch (e) {
+    if (!(e instanceof OpenAIError)) throw e;
+    // 🧠 כל שגיאת API של OpenAI (לא שגיאה בכלים שלנו) נרשמת ביומן, והתשובה יוצאת מ-Claude.
+    //    meta.model בהודעה יראה את זה, כך שתקלה מתמשכת לא עוברת בשקט.
+    console.error("openai failed, falling back to claude", model, e.message);
+    return runClaudeAgent(a, FALLBACK_MODEL);
+  }
+}
+
+async function runClaudeAgent(a: AgentInput, model: string): Promise<AgentResult> {
+  const client = a.client ?? anthropicClient();
   const messages: MessageParam[] = [
     ...a.history.map((h) => ({ role: h.role, content: h.content })),
     {
@@ -89,7 +114,7 @@ export async function runAgent(a: AgentInput): Promise<AgentResult> {
   let pseudoRetried = false;
 
   for (; i < MAX_ITERATIONS; i++) {
-    response = await a.client.beta.messages.create({
+    response = await client.beta.messages.create({
       model,
       max_tokens: 16000,
       // system + tools קבועים → נשמרים ב-cache. ה-breakpoint על ה-system מכסה גם את tools (שבאים לפניו)

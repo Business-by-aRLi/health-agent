@@ -467,7 +467,7 @@ create policy "coach reads permitted clients" on public.workouts
 | `check_interactions(context)` 🆕 | בדיקה מול `interactions.json`: תרופה↔תוסף, תרופה↔מזון, תזמון |
 
 ### בחירת מודל
-- **ברירת מחדל:** שיחה ב-Claude Sonnet 5.5 (`claude-sonnet-5-5`), הודעות יזומות ב-Claude Haiku 5.5 (`claude-haiku-5-5`). ההיסטוריה של המודלים: Opus 5.5 (יקר, כ-10$ ביום עמוס) → Haiku (26.10, זול פי 40 אבל התשובות לא היו מספיק טובות) → Sonnet לשיחה (28.10). ה-cache הוא של שעה, כך שהודעות באותה שעה קוראות ממנו ב-10% מהמחיר. החלפה בלי שינוי קוד: `COACH_MODEL` לשיחה, `SCHEDULER_MODEL` להודעות היזומות.
+- **ברירת מחדל:** GPT של OpenAI, דרך ה-Responses API (`_shared/agent/openai.ts`): שיחה ב-`gpt-6.1-sol`, הודעות יזומות ב-`gpt-6-luna`. ההיסטוריה: Opus 5.5 (יקר) → Haiku 5.5 (26.10, התשובות לא הספיקו) → Sonnet 5.5 (28.10) → GPT (10.11, לבקשתך). לולאה אחת עם אותו חוזה לשני הספקים: `runAgent` בוחר לפי שם המודל (`gpt-*` מול OpenAI, `claude-*` מול Anthropic). אם OpenAI דוחה בקשה (מפתח, מודל, סכמה), התשובה יוצאת מ-Claude Sonnet, וזה נרשם ביומן וב-`messages.meta.model`. החלפה בלי שינוי קוד: `COACH_MODEL` לשיחה, `SCHEDULER_MODEL` להודעות היזומות, וכל אחד מהם יכול להיות גם `claude-*`. ה-cache של OpenAI אוטומטי, עם `prompt_cache_key` לפי משתמש.
 - **Fallback בצד השרת** (`fallbacks: "default"`): אם מסווג בטיחות דוחה בטעות שאלה לגיטימית (למשל על תרופות), הבקשה רצה מחדש על מודל חלופי. נשלח רק ל-Opus / Sonnet / Fable. ל-Haiku אין fallback בצד השרת, ודחייה מחזירה הודעה מנומסת.
 - **היסטוריה כטקסט:** בין הודעות נשמר ונשלח רק הטקסט של כל תור. בתוך תור אחד הכול append-only. ככה אפשר לקצר היסטוריה מההתחלה בלי לשבור את בלוקי ה-thinking.
 - **Prompt caching** על ה-system prompt וההקשר הקבוע חוסך עלות משמעותית בשיחות חוזרות.
