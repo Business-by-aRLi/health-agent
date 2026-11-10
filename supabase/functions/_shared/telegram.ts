@@ -21,6 +21,17 @@ async function call<T = unknown>(method: string, body: Record<string, unknown>):
   return json.result as T;
 }
 
+/** שולח קובץ טקסט (למשל ייצוא של השיחה) כמסמך להורדה */
+export async function sendDocument(chatId: number, filename: string, content: string, caption?: string): Promise<void> {
+  const form = new FormData();
+  form.append("chat_id", String(chatId));
+  form.append("document", new Blob([content], { type: "text/markdown; charset=utf-8" }), filename);
+  if (caption) form.append("caption", caption);
+  const res = await fetch(`${API}/bot${token()}/sendDocument`, { method: "POST", body: form });
+  const json = await res.json();
+  if (!json.ok) throw new Error(`telegram sendDocument failed: ${json.description ?? res.status}`);
+}
+
 /** טלגרם מגביל הודעה ל-4096 תווים. מפצלים בגבול של פסקה, ואם אין, בגבול של שורה. */
 export function splitMessage(text: string, max = 4000): string[] {
   const parts: string[] = [];
